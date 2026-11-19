@@ -111,6 +111,11 @@ Turn on **⚙ → Web display** (or launch with `--web`), then:
   hard to read — tap the **◐** button (top-right) to cycle
   **dark → light → transparent**; the choice is remembered per device.
   URL params force it too: `?bg=black`, `?bg=light`, `?bg=transparent`.
+- **☀ Keep awake**: tap it on a phone/tablet so the screen stays lit during
+  a long measurement (Wake Lock API where allowed + a NoSleep-style muted
+  video trick for plain-HTTP pages). Tap again to let the phone sleep.
+  On stubborn iPhones, also set *Settings → Display → Auto-Lock → Never*
+  for the session.
 
 The web display only *shows* what the app already reads — it never opens a
 second connection to the meter. The port is the `WEB_PORT` constant (8123).
