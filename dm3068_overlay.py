@@ -104,7 +104,7 @@ T = {
         "alarm": "🔔 ALARM: threshold exceeded",
         "csv_done": "📄 logging stopped — {rows} rows written → {path}",
         "snap_done": "📷 snapshot → {path}",
-        "web_on": "🌐 web display ON → http://localhost:8123",
+        "web_on": "🌐 web ON → http://localhost:8123 · phone: http://{lan}:8123",
         "web_off": "🌐 web display OFF",
         "web_busy": "⚠ web port 8123 busy — display off",
         "unknown": "unknown func {f}",
@@ -131,7 +131,7 @@ T = {
         "alarm": "🔔 ALARME : seuil dépassé",
         "csv_done": "📄 enregistrement arrêté — {rows} lignes écrites → {path}",
         "snap_done": "📷 capture → {path}",
-        "web_on": "🌐 affichage web ACTIVÉ → http://localhost:8123",
+        "web_on": "🌐 web ACTIVÉ → http://localhost:8123 · téléphone : http://{lan}:8123",
         "web_off": "🌐 affichage web DÉSACTIVÉ",
         "web_busy": "⚠ port web 8123 déjà occupé — affichage désactivé",
         "unknown": "fct inconnue {f}",
@@ -171,6 +171,18 @@ def fmt(val, func):
         if abs(val) >= p:
             return f"{val / p:.3f}", f"{sym}{FUNCS[func][1]}"
     return f"{val:.3f}", FUNCS[func][1]
+
+
+def lan_ip():
+    """Best-effort LAN address of this machine (for the web display hint)."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except OSError:
+        return "127.0.0.1"
 
 
 def fmt_delta(sec):
@@ -960,8 +972,9 @@ class Overlay(tk.Tk):
                 return                   # "webfail" arrives via the queue
         self.web_on = True
         self._refresh_title()
-        self.ol_lbl.config(text=self.T["web_on"], fg="#a6e22e")
-        self.after(6000, lambda: self.ol_lbl.config(text=""))
+        self.ol_lbl.config(
+            text=self.T["web_on"].format(lan=lan_ip()), fg="#a6e22e")
+        self.after(8000, lambda: self.ol_lbl.config(text=""))
 
     def _web_stop(self):
         if self.webserver is not None:
