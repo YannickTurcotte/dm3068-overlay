@@ -106,8 +106,11 @@ Turn on **⚙ → Web display** (or launch with `--web`), then:
   the `OVERLOAD` banner and the stats float over your scene — no window
   capture, no chroma key. This is exactly the "repair-video inset" look.
 - **Phone / tablet** on the same network — open `http://<pc-ip>:8123`
-  (Windows will ask for firewall permission on first run). Add `?bg=black`
-  for a readable dark background; the flag works in OBS too.
+  (Windows will ask for firewall permission on first run).
+- **Themes**: the page starts *transparent* (the OBS look). Elsewhere it is
+  hard to read — tap the **◐** button (top-right) to cycle
+  **dark → light → transparent**; the choice is remembered per device.
+  URL params force it too: `?bg=black`, `?bg=light`, `?bg=transparent`.
 
 The web display only *shows* what the app already reads — it never opens a
 second connection to the meter. The port is the `WEB_PORT` constant (8123).
