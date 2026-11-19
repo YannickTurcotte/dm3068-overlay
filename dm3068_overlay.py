@@ -269,19 +269,22 @@ BUILD_HTML = """<!doctype html><html><head><meta charset="utf-8">
   body.theme-transparent #v,body.theme-transparent #u,body.theme-transparent #ol,
   body.theme-transparent #f,body.theme-transparent #s{
        text-shadow:0 0 4px rgba(0,0,0,.55);}
-  #btn{position:fixed;top:2vmin;right:2vmin;font-size:5vmin;line-height:1;
-       border:none;border-radius:1.5vmin;padding:1vmin 2vmin;
-       background:rgba(0,0,0,.2);color:#333;cursor:pointer;
-       transition:opacity .3s;}
-  body.theme-dark #btn{background:rgba(128,128,128,.35);color:#fff;}
-  body.theme-transparent #btn{opacity:0;pointer-events:none;}
-  body.theme-transparent.btn-reveal #btn{opacity:.65;pointer-events:auto;}
+  #ui{position:fixed;top:2vmin;right:2vmin;display:flex;gap:1vmin;
+      transition:opacity .3s;}
+  #ui button{font-size:5vmin;line-height:1;border:none;border-radius:1.5vmin;
+       padding:1vmin 2vmin;background:rgba(0,0,0,.2);color:#333;cursor:pointer;}
+  body.theme-dark #ui button{background:rgba(128,128,128,.35);color:#fff;}
+  body.theme-transparent #ui{opacity:0;pointer-events:none;}
+  body.theme-transparent.btn-reveal #ui{opacity:.65;pointer-events:auto;}
 </style></head><body class="theme-dark">
 <div id="f">—</div>
 <div id="row"><span id="v">- - - -</span><span id="u"></span></div>
 <div id="ol"></div>
 <div id="s"></div>
+<div id="ui">
+<button id="wake" title="keep this screen awake">☀</button>
 <button id="btn" title="background: dark / light / transparent">&#9680;</button>
+</div>
 <script>
 const ORDER = ["dark", "light", "transparent"];
 function apply(name){
@@ -297,11 +300,59 @@ function apply(name){
     const cur = document.body.className.replace("theme-","");
     apply(ORDER[(ORDER.indexOf(cur) + 1) % ORDER.length]);
   });
-  // In the transparent (OBS) theme the button is hidden: tapping anywhere
-  // reveals it for 5 s so a phone user can still switch themes. OBS never
+  // keep-awake: Wake Lock API when the context allows it (HTTPS), plus a
+  // NoSleep-style 2px muted video fed by a canvas stream — playing video is
+  // what actually keeps an iPhone screen lit over plain HTTP. Needs one
+  // tap (browser autoplay rules), so it lives behind the ☀ button.
+  let wakeLock = null, vid = null, awake = false;
+  const wakeBtn = document.getElementById("wake");
+  function setAwake(on){
+    awake = on;
+    wakeBtn.textContent = on ? "\u2600 ON" : "\u2600";
+  }
+  async function toggleWake(){
+    if(awake){
+      try{ if(wakeLock){ wakeLock.release(); wakeLock = null; } }catch(e){}
+      if(vid){ vid.pause(); }
+      setAwake(false);
+      return;
+    }
+    let ok = false;
+    try{
+      if("wakeLock" in navigator){
+        wakeLock = await navigator.wakeLock.request("screen");
+        ok = true;
+      }
+    }catch(e){}
+    try{
+      if(!vid){
+        const cv = document.createElement("canvas");
+        cv.width = cv.height = 2;
+        vid = document.createElement("video");
+        vid.muted = true; vid.loop = true;
+        vid.setAttribute("playsinline", "");
+        vid.style.cssText = "position:fixed;left:0;bottom:0;width:2px;height:2px;opacity:.01;";
+        document.body.appendChild(vid);
+        vid.srcObject = cv.captureStream(10);
+      }
+      await vid.play();
+      ok = true;
+    }catch(e){}
+    setAwake(ok);
+    if(!ok){ wakeBtn.textContent = "\u2600 \u2717"; }
+  }
+  wakeBtn.addEventListener("click", toggleWake);
+  document.addEventListener("visibilitychange", async function(){
+    if(awake && document.visibilityState === "visible" &&
+       "wakeLock" in navigator && !wakeLock){
+      try{ wakeLock = await navigator.wakeLock.request("screen"); }catch(e){}
+    }
+  });
+  // In the transparent (OBS) theme the buttons are hidden: tapping anywhere
+  // reveals them for 5 s so a phone user can still switch themes. OBS never
   // taps, so the stream stays clean.
   document.body.addEventListener("click", function(ev){
-    if(ev.target.id === "btn") return;
+    if(ev.target.closest && ev.target.closest("#ui")) return;
     if(document.body.className.indexOf("theme-transparent") === -1) return;
     document.body.classList.add("btn-reveal");
     clearTimeout(window.__btnTimer);
