@@ -29,8 +29,10 @@ Features:
 Protocol: raw SCPI over TCP port 5555 (no dependencies required).
 Close: window X or Escape.
 """
+import base64
 import csv
 import datetime
+import io
 import json
 import math
 import os
@@ -41,6 +43,7 @@ import threading
 import time
 import tkinter as tk
 import tkinter.font as tkfont
+import wave as wavemod
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from tkinter import simpledialog, messagebox
@@ -104,7 +107,7 @@ T = {
         "alarm": "🔔 ALARM: threshold exceeded",
         "csv_done": "📄 logging stopped — {rows} rows written → {path}",
         "snap_done": "📷 snapshot → {path}",
-        "web_on": "🌐 web ON → http://localhost:8123 · phone: http://{lan}:8123",
+        "web_on": "🌐 web display ON",
         "web_off": "🌐 web display OFF",
         "web_busy": "⚠ web port 8123 busy — display off",
         "unknown": "unknown func {f}",
@@ -131,7 +134,7 @@ T = {
         "alarm": "🔔 ALARME : seuil dépassé",
         "csv_done": "📄 enregistrement arrêté — {rows} lignes écrites → {path}",
         "snap_done": "📷 capture → {path}",
-        "web_on": "🌐 web ACTIVÉ → http://localhost:8123 · téléphone : http://{lan}:8123",
+        "web_on": "🌐 web ACTIVÉ",
         "web_off": "🌐 affichage web DÉSACTIVÉ",
         "web_busy": "⚠ port web 8123 déjà occupé — affichage désactivé",
         "unknown": "fct inconnue {f}",
@@ -173,18 +176,6 @@ def fmt(val, func):
     return f"{val:.3f}", FUNCS[func][1]
 
 
-def lan_ip():
-    """Best-effort LAN address of this machine (for the web display hint)."""
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except OSError:
-        return "127.0.0.1"
-
-
 def fmt_delta(sec):
     """'45s', '4m30s', '1h05m' — for the graph time axis."""
     sec = int(sec)
@@ -193,6 +184,26 @@ def fmt_delta(sec):
     if sec >= 60:
         return f"{sec // 60}m{sec % 60:02d}s"
     return f"{sec}s"
+
+
+def _silent_wav_b64():
+    """2 s of 8-bit 8 kHz mono WAV with a microscopic sine (inaudible but a
+    *real* audio track — iOS only postpones screen lock while media with an
+    audio track actually plays; a muted video alone is ignored)."""
+    buf = io.BytesIO()
+    w = wavemod.Wave_write(buf)
+    w.setnchannels(1)
+    w.setsampwidth(1)
+    w.setframerate(8000)
+    frames = bytearray()
+    for i in range(16000):
+        frames.append(128 + int(2 * math.sin(i * 0.15)))
+    w.writeframes(bytes(frames))
+    w.close()
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+WAV_B64 = _silent_wav_b64()
 
 
 class WebServer:
@@ -238,7 +249,7 @@ def _make_handler(app):
                     body = json.dumps(app.web_snapshot()).encode()
                     ctype = "application/json"
                 else:
-                    body = BUILD_HTML.encode()
+                    body = BUILD_HTML.replace("__WAVB64__", WAV_B64).encode()
                     ctype = "text/html; charset=utf-8"
                 self.send_response(200)
                 self.send_header("Content-Type", ctype)
@@ -297,6 +308,7 @@ BUILD_HTML = """<!doctype html><html><head><meta charset="utf-8">
 <div id="ol"></div>
 <div id="s"></div>
 <div id="ws"></div>
+<audio id="wav" loop src="data:audio/wav;base64,__WAVB64__"></audio>
 <div id="ui">
 <button id="wake" title="keep this screen awake">☀</button>
 <button id="btn" title="background: dark / light / transparent">&#9680;</button>
@@ -337,6 +349,7 @@ function apply(name){
     if(awake){
       try{ if(wakeLock){ wakeLock.release(); wakeLock = null; } }catch(e){}
       if(vid){ vid.pause(); }
+      try{ document.getElementById("wav").pause(); }catch(e){}
       try{ if(audioCtx){ audioCtx.suspend(); } }catch(e){}
       setAwake(false);
       wakeMsg("screen awake — off");
@@ -366,11 +379,19 @@ function apply(name){
       parts.push("videoERR:" + (e && e.name ? e.name : "?"));
     }
     try{
+      const w = document.getElementById("wav");   // real (silent) audio track
+      w.volume = 0.02;
+      await w.play();
+      parts.push("wav");
+    }catch(e){
+      parts.push("wavERR:" + (e && e.name ? e.name : "?"));
+    }
+    try{
       if(!audioCtx){
         audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         const o = audioCtx.createOscillator();
         const g = audioCtx.createGain();
-        g.gain.value = 0;                          // silent
+        g.gain.value = 0.001;                      // inaudible, not "silence"
         o.connect(g); g.connect(audioCtx.destination);
         o.start();
       } else if(audioCtx.state === "suspended"){
@@ -391,8 +412,13 @@ function apply(name){
   }
   wakeBtn.addEventListener("click", toggleWake);
   document.addEventListener("visibilitychange", async function(){
-    if(awake && document.visibilityState === "visible" &&
-       "wakeLock" in navigator && !wakeLock){
+    if(document.visibilityState !== "visible" || !awake) return;
+    if(vid){ try{ await vid.play(); }catch(e){} }
+    try{ const w = document.getElementById("wav"); if(w){ await w.play(); } }
+    catch(e){}
+    try{ if(audioCtx && audioCtx.state === "suspended"){ await audioCtx.resume(); } }
+    catch(e){}
+    if("wakeLock" in navigator && !wakeLock){
       try{ wakeLock = await navigator.wakeLock.request("screen"); }catch(e){}
     }
   });
@@ -972,9 +998,8 @@ class Overlay(tk.Tk):
                 return                   # "webfail" arrives via the queue
         self.web_on = True
         self._refresh_title()
-        self.ol_lbl.config(
-            text=self.T["web_on"].format(lan=lan_ip()), fg="#a6e22e")
-        self.after(8000, lambda: self.ol_lbl.config(text=""))
+        self.ol_lbl.config(text=self.T["web_on"], fg="#a6e22e")
+        self.after(6000, lambda: self.ol_lbl.config(text=""))
 
     def _web_stop(self):
         if self.webserver is not None:
