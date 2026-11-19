@@ -124,6 +124,7 @@ T = {
         "set_title": "Settings", "set_ip": "IP address:",
         "set_lang": "Language:", "set_touch": "Touch mode (big buttons):",
         "set_web": "Web display (OBS / browser):",
+        "web_urls": "phone:  https://{lan}:8124   ·   local:  http://localhost:8123",
         "on": "ON", "off": "OFF", "ok": "OK", "cancel": "Cancel",
         "bad_ip": "Invalid IP address.",
         "waiting": "waiting for points…",
@@ -151,6 +152,7 @@ T = {
         "set_title": "Configuration", "set_ip": "Adresse IP :",
         "set_lang": "Langue :", "set_touch": "Mode tactile (gros boutons) :",
         "set_web": "Affichage web (OBS / navigateur) :",
+        "web_urls": "téléphone :  https://{lan}:8124   ·   local :  http://localhost:8123",
         "on": "ACTIVÉ", "off": "ÉTEINT", "ok": "OK", "cancel": "Annuler",
         "bad_ip": "Adresse IP invalide.",
         "waiting": "en attente de points…",
@@ -179,6 +181,18 @@ def fmt(val, func):
         if abs(val) >= p:
             return f"{val / p:.3f}", f"{sym}{FUNCS[func][1]}"
     return f"{val:.3f}", FUNCS[func][1]
+
+
+def lan_ip():
+    """Best-effort LAN address of this machine, shown in the web settings."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except OSError:
+        return "127.0.0.1"
 
 
 def fmt_delta(sec):
@@ -873,7 +887,10 @@ class Overlay(tk.Tk):
                          fg="#ffffff", bg="#1f7a1f" if self.web_on else "#1a1a1a",
                          activebackground="#333333", activeforeground="#ffffff",
                          command=wtoggle)
-        wbtn.grid(row=7, column=0, sticky="w", padx=10, pady=(0, 12))
+        wbtn.grid(row=7, column=0, sticky="w", padx=10, pady=(0, 4))
+        tk.Label(dlg, text=self.T["web_urls"].format(lan=lan_ip()),
+                 font=("Consolas", 9), fg="#888888", bg="black").grid(
+            row=8, column=0, sticky="w", padx=10, pady=(0, 10))
 
         def on_ok():
             ip = ip_var.get().strip()
@@ -892,7 +909,7 @@ class Overlay(tk.Tk):
                                 web_chosen["on"])
 
         row = tk.Frame(dlg, bg="black")
-        row.grid(row=8, column=0, sticky="e", padx=10, pady=(0, 12))
+        row.grid(row=9, column=0, sticky="e", padx=10, pady=(0, 12))
         tk.Button(row, text=self.T["cancel"], width=8, bd=0,
                   font=("Consolas", 11, "bold"), fg="#dddddd", bg="#1a1a1a",
                   activebackground="#333333",
