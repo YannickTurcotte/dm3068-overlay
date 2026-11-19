@@ -10,7 +10,9 @@ Features:
   - ⚙ settings dialog: IP address + language (English default, French
     available); persisted to dm3068_overlay.json next to the script
   - ▶/⏸ start-stop (series kept), 🧹 Clear (wipe series/stats/graph)
-  - scrolling 600-point graph, auto-scaled, min/avg/max stats, measured rate
+  - scrolling graph that fills the window (maximize it!), real time axis,
+    ~50 000-point history with spike-preserving min/max decimation,
+    auto-scaled, min/avg/max stats, measured rate
   - speed − / +: MAX → ÷4 → ÷10 → 1/5 s (polling cadence; the hardware
     ceiling is fixed per function: DCV ≈ 2.7 sps, CONT ≈ 28 sps, DIOD ≈ 25
     sps, ACV/ACI ≈ 1 sps, FREQ/PER ≈ 1 sps — this firmware rejects
@@ -30,6 +32,7 @@ Close: window X or Escape.
 import csv
 import datetime
 import json
+import math
 import os
 import queue
 import socket
@@ -54,7 +57,8 @@ except ImportError:
 DEFAULT_IP = "192.168.2.218"
 PORT = 5555
 OVERLOAD = 9.9e37          # value returned when out of range
-HISTORY = 600              # points kept for the graph
+HISTORY = 50000            # points kept for the graph (~5 h at DCV 2.7 sps,
+                           # ~30 min at CONT 28 sps); drawing is decimated
 CAPTURES_DIR = "captures"
 LOGS_DIR = "logs"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -167,6 +171,16 @@ def fmt(val, func):
         if abs(val) >= p:
             return f"{val / p:.3f}", f"{sym}{FUNCS[func][1]}"
     return f"{val:.3f}", FUNCS[func][1]
+
+
+def fmt_delta(sec):
+    """'45s', '4m30s', '1h05m' — for the graph time axis."""
+    sec = int(sec)
+    if sec >= 3600:
+        return f"{sec // 3600}h{sec % 3600 // 60:02d}m"
+    if sec >= 60:
+        return f"{sec // 60}m{sec % 60:02d}s"
+    return f"{sec}s"
 
 
 class WebServer:
@@ -453,6 +467,8 @@ class Overlay(tk.Tk):
 
         self.canvas = tk.Canvas(self, width=560, height=170, bg="#0a0a0a",
                                 highlightthickness=1, highlightbackground="#333333")
+        self.canvas.bind("<Configure>",
+                         lambda e: setattr(self, "dirty", True))
         self.graph_on = False
 
         # widgets that grow in touch mode: (widget, font OFF, font ON, padx)
@@ -717,7 +733,7 @@ class Overlay(tk.Tk):
     def toggle_graph(self):
         self.graph_on = not self.graph_on
         if self.graph_on:
-            self.canvas.pack(fill="x", padx=8, pady=(0, 8))
+            self.canvas.pack(fill="both", expand=True, padx=8, pady=(0, 8))
         else:
             self.canvas.pack_forget()
 
@@ -956,45 +972,98 @@ class Overlay(tk.Tk):
         self.update_stats()
         c = self.canvas
         c.delete("all")
-        w, h = int(c["width"]), int(c["height"])
+        w = c.winfo_width()
+        h = c.winfo_height()
+        if w < 60 or h < 60:
+            return
         for frac in (0.25, 0.5, 0.75):                      # horizontal grid
-            y = int(h * frac)
+            y = int(18 + frac * (h - 34))
             c.create_line(0, y, w, y, fill="#222222")
         pts = list(self.series)
-        vals = [v for _, v in pts if v is not None]
+        finite = sum(1 for _, v in pts if v is not None)
+        hz = self.measured_hz()
+        span = (pts[-1][0] - pts[0][0]) if len(pts) >= 2 else 0.0
+        span_txt = f" · {fmt_delta(span)}" if span > 0 else ""
         c.create_text(8, 8, anchor="nw",
-                      text=f"{self.func or '?'}   {self.measured_hz()}   "
-                           f"[{len(pts)} {self.T['pts']}]",
+                      text=f"{self.func or '?'}   {hz}   [{finite} {self.T['pts']}"
+                           f"{span_txt}]",
                       fill="#888888", font=("Consolas", 10))
-        if len(vals) < 2:
+        if finite < 2:
             c.create_text(w // 2, h // 2, text=self.T["waiting"],
                           fill="#555555", font=("Consolas", 12))
             return
-        lo, hi = min(vals), max(vals)
+        if span <= 0:
+            span = 1e-9
+        t0, t_end = pts[0][0], pts[-1][0]
+
+        # min/max buckets per pixel column: hours of data still show a 1-sample
+        # glitch, and OVERLOAD rows break the trace
+        buckets = {}
+        lo = hi = None
+        for t, v in pts:
+            x = int((t - t0) / span * (w - 1))
+            b = buckets.setdefault(x, [None, None, False])
+            if v is None:
+                b[2] = True
+                continue
+            if lo is None:
+                lo = hi = v
+            else:
+                if v < lo:
+                    lo = v
+                if v > hi:
+                    hi = v
+            b[0] = v if b[0] is None else min(b[0], v)
+            b[1] = v if b[1] is None else max(b[1], v)
+        if lo is None:
+            return
         if hi - lo < 1e-30:
             lo, hi = lo - 1, hi + 1
         pad = (hi - lo) * 0.1
         lo, hi = lo - pad, hi + pad
 
-        def xy(i, v):
-            x = i * (w - 1) / max(len(pts) - 1, 1)
-            y = h - 4 - (v - lo) / (hi - lo) * (h - 20)
-            return x, y
-
-        # continuous segments only (None = OVERLOAD cuts the trace)
-        seg = []
-        for i, (_, v) in enumerate(pts):
-            if v is None:
-                if len(seg) >= 2:
-                    c.create_line(seg, fill="#ff1a1a", width=1)
-                seg = []
-            else:
-                seg.extend(xy(i, v))
-        if len(seg) >= 2:
-            c.create_line(seg, fill="#ff1a1a", width=1)
+        def yv(v):
+            return h - 14 - (v - lo) / (hi - lo) * (h - 34)
 
         f3 = (lambda v: " ".join(fmt(v, self.func))
               if self.func in FUNCS else f"{v:.3g}")
+
+        # vertical time gridlines + relative labels ("-30s", "-1m00s", ...)
+        step = None
+        for s in (1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600):
+            if span / s <= 8:
+                step = s
+                break
+        if step:
+            tt = math.ceil(t0 / step) * step
+            while tt <= t_end:
+                x = (tt - t0) / span * (w - 1)
+                c.create_line(x, 18, x, h - 14, fill="#1a1a1a")
+                if x < w - 120:                  # keep the corner V label clear
+                    c.create_text(x + 4, h - 4, anchor="sw", fill="#555555",
+                                  font=("Consolas", 9),
+                                  text="-" + fmt_delta(t_end - tt))
+                tt += step
+
+        # trace (continuous segments only)
+        seg = []
+        for x in sorted(buckets):
+            bmin, bmax, has_ol = buckets[x]
+            if has_ol or bmin is None:
+                if len(seg) >= 2:
+                    c.create_line(seg, fill="#ff1a1a", width=1)
+                seg = []
+                continue
+            seg.extend((x, yv(bmin), x, yv(bmax)))
+        if len(seg) >= 2:
+            c.create_line(seg, fill="#ff1a1a", width=1)
+
+        # voltage labels on the horizontal gridlines + extremes
+        for frac in (0.25, 0.5, 0.75):
+            y = int(18 + frac * (h - 34))
+            gv = hi - frac * (hi - lo)
+            c.create_text(w - 6, y - 2, anchor="ne", text=f3(gv),
+                          fill="#666666", font=("Consolas", 9))
         c.create_text(w - 8, 8, anchor="ne", text=f3(hi),
                       fill="#666666", font=("Consolas", 10))
         c.create_text(w - 8, h - 8, anchor="se", text=f3(lo),
