@@ -226,9 +226,7 @@ def _make_handler(app):
                     body = json.dumps(app.web_snapshot()).encode()
                     ctype = "application/json"
                 else:
-                    body = BUILD_HTML.replace("__BG__", "#000"
-                                              if "bg=black" in self.path
-                                              else "transparent").encode()
+                    body = BUILD_HTML.encode()
                     ctype = "text/html; charset=utf-8"
                 self.send_response(200)
                 self.send_header("Content-Type", ctype)
@@ -244,26 +242,59 @@ def _make_handler(app):
     return Handler
 
 
+# Web page themes: "transparent" is the zero-config OBS default (hidden
+# theme button so nothing shows in the stream); "dark" and "light" are the
+# readable ones for phones. ?bg=black|light|transparent forces a theme and
+# remembers it; the ◐ button cycles otherwise (localStorage per device).
 BUILD_HTML = """<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-  html,body{margin:0;height:100%;background:__BG__;}
+  html,body{margin:0;height:100%;}
   body{display:flex;flex-direction:column;justify-content:center;align-items:center;
-       font-family:Consolas,monospace;color:#ff1a1a;overflow:hidden;
-       text-shadow:0 0 4px rgba(0,0,0,.55);}
-  #f{color:#ffd400;font-size:4vmin;font-weight:bold;}
+       font-family:Consolas,monospace;overflow:hidden;
+       background:var(--bg);color:var(--digits);
+       -webkit-user-select:none;user-select:none;}
+  #f{color:var(--func);font-size:4vmin;font-weight:bold;}
   #row{display:flex;align-items:baseline;}
   #v{font-size:20vmin;font-weight:bold;line-height:1;}
   #u{font-size:8vmin;font-weight:bold;margin-left:1vmin;}
-  #ol{color:#00ffff;font-size:7vmin;font-weight:bold;min-height:8vmin;
-      text-shadow:0 0 6px rgba(0,0,0,.6);}
-  #s{color:#c8ccd0;font-size:3vmin;text-shadow:0 0 4px rgba(0,0,0,.7);}
-</style></head><body>
+  #ol{color:var(--ol);font-size:7vmin;font-weight:bold;min-height:8vmin;}
+  #s{color:var(--stats);font-size:3vmin;}
+  body.theme-dark{--bg:#000;--digits:#ff1a1a;--func:#ffd400;
+                  --ol:#00ffff;--stats:#9aa0a6;}
+  body.theme-light{--bg:#fff;--digits:#d40000;--func:#b8860b;
+                   --ol:#0088aa;--stats:#444;}
+  body.theme-transparent{--bg:transparent;--digits:#ff1a1a;--func:#ffd400;
+                         --ol:#00ffff;--stats:#c8ccd0;}
+  body.theme-transparent #v,body.theme-transparent #u,body.theme-transparent #ol,
+  body.theme-transparent #f,body.theme-transparent #s{
+       text-shadow:0 0 4px rgba(0,0,0,.55);}
+  #btn{position:fixed;top:2vmin;right:2vmin;font-size:5vmin;line-height:1;
+       border:none;border-radius:1.5vmin;padding:1vmin 2vmin;
+       background:rgba(128,128,128,.35);color:#fff;cursor:pointer;}
+  body.theme-transparent #btn{display:none;}
+</style></head><body class="theme-dark">
 <div id="f">—</div>
 <div id="row"><span id="v">- - - -</span><span id="u"></span></div>
 <div id="ol"></div>
 <div id="s"></div>
+<button id="btn" title="background: dark / light / transparent">&#9680;</button>
 <script>
+const ORDER = ["dark", "light", "transparent"];
+function apply(name){
+  document.body.className = "theme-" + name;
+  try{ localStorage.setItem("dm3068theme", name); }catch(e){}
+}
+(function(){
+  const m = location.search.match(/[?&]bg=(black|light|transparent)/);
+  let t = m ? {black:"dark", light:"light", transparent:"transparent"}[m[1]] : null;
+  if(!t){ try{ t = localStorage.getItem("dm3068theme"); }catch(e){} }
+  document.body.className = "theme-" + (t || "transparent");
+  document.getElementById("btn").addEventListener("click", function(){
+    const cur = document.body.className.replace("theme-","");
+    apply(ORDER[(ORDER.indexOf(cur) + 1) % ORDER.length]);
+  });
+})();
 async function tick(){
   try{
     const d = await (await fetch("/api")).json();
