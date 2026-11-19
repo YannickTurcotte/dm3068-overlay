@@ -105,8 +105,14 @@ Turn on **⚙ → Web display** (or launch with `--web`), then:
   (e.g. 1280×360). The page background is **transparent**: only the digits,
   the `OVERLOAD` banner and the stats float over your scene — no window
   capture, no chroma key. This is exactly the "repair-video inset" look.
-- **Phone / tablet** on the same network — open `http://<pc-ip>:8123`
-  (Windows will ask for firewall permission on first run).
+- **Phone / tablet** on the same network — open
+  **`https://<pc-ip>:8124`** and accept the self-signed certificate once
+  (Safari: *Show Details → visit this website → Load*). That page is a
+  secure context, so the native **Wake Lock** works: tap ☀ and the screen
+  stays lit natively, no beeps. Plain `http://<pc-ip>:8123` also exists
+  (OBS and quick looks keep using it) — but without HTTPS the browser
+  blocks the native keep-awake there, so the ☀ button falls back to
+  playing silent media.
 - **Themes**: the page starts *transparent* (the OBS look). Elsewhere it is
   hard to read — tap the **◐** button (top-right) to cycle
   **dark → light → transparent**; the choice is remembered per device.

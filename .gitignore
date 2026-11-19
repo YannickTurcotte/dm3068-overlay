@@ -3,4 +3,5 @@ __pycache__/
 captures/
 logs/
 *.zip
+*.pem
 dm3068_overlay.json

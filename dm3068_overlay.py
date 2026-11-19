@@ -37,7 +37,10 @@ import json
 import math
 import os
 import queue
+import shutil
 import socket
+import ssl
+import subprocess
 import sys
 import threading
 import time
@@ -67,6 +70,8 @@ LOGS_DIR = "logs"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "dm3068_overlay.json")
 WEB_PORT = 8123               # built-in web display (OBS Browser Source)
+WEB_TLS_PORT = 8124           # HTTPS door: secure context for the phone so
+                              # the native iOS/Android Wake Lock API unlocks
 GEAR_GLYPH = chr(0xE713)      # Segoe MDL2 Assets "Setting" (real gear)
 FOLDER_GLYPH = chr(0xE8B7)    # Segoe MDL2 Assets "Folder"
 
@@ -206,20 +211,63 @@ def _silent_wav_b64():
 WAV_B64 = _silent_wav_b64()
 
 
+def _ensure_tls_cert():
+    """Self-signed cert for the HTTPS door (8124): a secure context is what
+    unlocks the native Screen Wake Lock API on phones. Generated once via
+    the OpenSSL shipped with Git for Windows."""
+    cert = os.path.join(BASE_DIR, "cert.pem")
+    key = os.path.join(BASE_DIR, "key.pem")
+    if os.path.exists(cert) and os.path.exists(key):
+        return cert, key
+    exe = shutil.which("openssl")
+    if not exe:
+        for cand in (r"C:\Program Files\Git\usr\bin\openssl.exe",
+                     r"C:\Program Files\Git\mingw64\bin\openssl.exe"):
+            if os.path.exists(cand):
+                exe = cand
+                break
+    if not exe:
+        return None
+    try:
+        subprocess.run([exe, "req", "-x509", "-newkey", "rsa:2048",
+                        "-keyout", key, "-out", cert, "-days", "3650",
+                        "-nodes", "-subj", "//CN=dm3068"],
+                       check=True, capture_output=True, timeout=60)
+        return cert, key
+    except Exception:
+        return None
+
+
+def _tls_context():
+    ck = _ensure_tls_cert()
+    if not ck:
+        return None
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    try:
+        ctx.load_cert_chain(ck[0], ck[1])
+        return ctx
+    except Exception:
+        return None
+
+
 class WebServer:
     """Tiny stdlib HTTP server exposing the live reading to OBS Browser
     Sources and phones:  GET /     -> HTML page (transparent background by
                                      default, ?bg=black for dark),
                          GET /api  -> JSON snapshot, polled by the page."""
 
-    def __init__(self, app, port=WEB_PORT):
+    def __init__(self, app, port=WEB_PORT, ssl_ctx=None):
         self.app = app
         self.port = port
+        self.ssl_ctx = ssl_ctx
         self.httpd = None
 
     def start(self):
         try:
             self.httpd = _HTTPD(("0.0.0.0", self.port), _make_handler(self.app))
+            if self.ssl_ctx:
+                self.httpd.socket = self.ssl_ctx.wrap_socket(
+                    self.httpd.socket, server_side=True)
         except OSError:
             self.app.q.put((self.app.gen, "webfail"))
             return False
@@ -362,44 +410,58 @@ function apply(name){
         parts.push("wakeLock");
       }
     }catch(e){}
-    try{
-      if(!vid){
-        const cv = document.createElement("canvas");
-        cv.width = cv.height = 2;
-        vid = document.createElement("video");
-        vid.muted = true; vid.loop = true;
-        vid.setAttribute("playsinline", "");
-        vid.style.cssText = "position:fixed;left:0;bottom:0;width:2px;height:2px;opacity:.01;";
-        document.body.appendChild(vid);
-        vid.srcObject = cv.captureStream(10);
+    if(!wakeLock){
+      // plain HTTP (no secure context): fall back to playing media. Both
+      // play() calls are started inside the tap's user activation, without
+      // awaits in between, or iOS rejects the second one (NotAllowedError).
+      const jobs = [];
+      jobs.push((async function(){
+        if(!vid){
+          const cv = document.createElement("canvas");
+          cv.width = cv.height = 2;
+          vid = document.createElement("video");
+          vid.muted = true; vid.loop = true;
+          vid.setAttribute("playsinline", "");
+          vid.style.cssText = "position:fixed;left:0;bottom:0;width:2px;height:2px;opacity:.01;";
+          document.body.appendChild(vid);
+          vid.srcObject = cv.captureStream(10);
+        }
+        await vid.play();
+        return "video";
+      })().catch(function(e){
+        return "videoERR:" + (e && e.name ? e.name : "?");
+      }));
+      jobs.push((async function(){
+        const w = document.getElementById("wav");
+        w.volume = 0.02;
+        await w.play();
+        return "wav";
+      })().catch(function(e){
+        return "wavERR:" + (e && e.name ? e.name : "?");
+      }));
+      const res = await Promise.allSettled(jobs);
+      res.forEach(function(r){
+        parts.push(r.status === "fulfilled" ? r.value : String(r.reason));
+      });
+      // last-resort oscillator only when BOTH media failed (it can faintly
+      // beep on a phone speaker at high volume)
+      if(!parts.some(function(p){ return p === "video" || p === "wav"; })){
+        try{
+          if(!audioCtx){
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const o = audioCtx.createOscillator();
+            const g = audioCtx.createGain();
+            g.gain.value = 0.001;                      // inaudible, not "silence"
+            o.connect(g); g.connect(audioCtx.destination);
+            o.start();
+          } else if(audioCtx.state === "suspended"){
+            await audioCtx.resume();
+          }
+          parts.push("audio");
+        }catch(e){
+          parts.push("audioERR:" + (e && e.name ? e.name : "?"));
+        }
       }
-      await vid.play();
-      parts.push("video");
-    }catch(e){
-      parts.push("videoERR:" + (e && e.name ? e.name : "?"));
-    }
-    try{
-      const w = document.getElementById("wav");   // real (silent) audio track
-      w.volume = 0.02;
-      await w.play();
-      parts.push("wav");
-    }catch(e){
-      parts.push("wavERR:" + (e && e.name ? e.name : "?"));
-    }
-    try{
-      if(!audioCtx){
-        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        const o = audioCtx.createOscillator();
-        const g = audioCtx.createGain();
-        g.gain.value = 0.001;                      // inaudible, not "silence"
-        o.connect(g); g.connect(audioCtx.destination);
-        o.start();
-      } else if(audioCtx.state === "suspended"){
-        await audioCtx.resume();
-      }
-      parts.push("audio");
-    }catch(e){
-      parts.push("audioERR:" + (e && e.name ? e.name : "?"));
     }
     if(parts.length > 0 && parts.some(function(p){ return p.indexOf("ERR") === -1; })){
       setAwake(true);
@@ -582,6 +644,7 @@ class Overlay(tk.Tk):
         self.cur_overload = False
         self.web_on = False
         self.webserver = None
+        self.webserver_tls = None
 
         self.title(f"DM3068 — {self.ip}")
         self.configure(bg="black")
@@ -997,6 +1060,12 @@ class Overlay(tk.Tk):
                 self.webserver = None
                 return                   # "webfail" arrives via the queue
         self.web_on = True
+        if self.webserver_tls is None:
+            ctx = _tls_context()
+            if ctx:
+                self.webserver_tls = WebServer(self, WEB_TLS_PORT, ctx)
+                if not self.webserver_tls.start():
+                    self.webserver_tls = None
         self._refresh_title()
         self.ol_lbl.config(text=self.T["web_on"], fg="#a6e22e")
         self.after(6000, lambda: self.ol_lbl.config(text=""))
@@ -1005,6 +1074,9 @@ class Overlay(tk.Tk):
         if self.webserver is not None:
             self.webserver.stop()
             self.webserver = None
+        if self.webserver_tls is not None:
+            self.webserver_tls.stop()
+            self.webserver_tls = None
         self.web_on = False
         self._refresh_title()
         self.ol_lbl.config(text=self.T["web_off"], fg="#9aa0a6")
@@ -1013,7 +1085,7 @@ class Overlay(tk.Tk):
     def _refresh_title(self):
         t = f"DM3068 — {self.ip}"
         if self.web_on:
-            t += f" · 🌐 :{WEB_PORT}"
+            t += " · 🌐 :8123 + 🔒 8124"
         self.title(t)
 
     # ---------------- UI loops ----------------
