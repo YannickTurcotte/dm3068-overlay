@@ -24,7 +24,9 @@ graph — the kind of inset you see in repair videos on YouTube, but wired to
 - **🧹 Clear** wipes the series, stats and graph
 - **⚙ Settings**: IP address + language, persisted to `dm3068_overlay.json`
   next to the script
-- **📄 CSV export** of the displayed series (mode graph)
+- **▶/■ CSV live logging**: click ▶ to start recording to `logs/*.csv`,
+  ■ to stop — rows are written in real time and a `● REC n` counter shows in
+  the stats line while recording (works with or without the graph open)
 - **🔔 Alarm**: threshold in base unit, beep + banner when exceeded
 - **📷 PNG snapshot** of the window (needs Pillow, optional)
 - Always on top, movable; `Esc` or the window X closes it
@@ -54,7 +56,7 @@ graph — the kind of inset you see in repair videos on YouTube, but wired to
 | `⏸ / ▶` | stop / resume acquisition (graph frozen) |
 | `🧹 Clear` | wipe the series, stats and graph |
 | `📈` | open/close the scrolling graph |
-| `📄 CSV` | export the displayed series to `logs/*.csv` (graph mode) |
+| `▶ / ■ CSV` | start / stop live logging to `logs/*.csv` (`● REC n` shown in the stats line while recording; the stop message reports the row count and file path) |
 | `🔔` | arm/disarm the alarm (threshold asked in base unit) |
 | `📷` | save a PNG snapshot to `captures/` |
 | `⚙` | settings: IP address, language (English / Français) |

@@ -15,7 +15,9 @@ Features:
     ceiling is fixed per function: DCV ≈ 2.7 sps, CONT ≈ 28 sps, DIOD ≈ 25
     sps, ACV/ACI ≈ 1 sps, FREQ/PER ≈ 1 sps — this firmware rejects
     RATE/NPLC/ZERO/APER)
-  - 📄 CSV export, 🔔 threshold alarm with beep, 📷 window snapshot (Pillow)
+  - ▶/■ CSV live logging: rows written in real time to logs/*.csv,
+    "● REC n" counter in the stats line while recording
+  - 🔔 threshold alarm with beep, 📷 window snapshot (Pillow)
   - start with graph open: python dm3068_overlay.py --graph
 
 Protocol: raw SCPI over TCP port 5555 (no dependencies required).
@@ -87,7 +89,7 @@ T = {
         "connecting": "connecting…", "lost": "● CONNECTION LOST",
         "stopped": "⏸ acquisition stopped",
         "alarm": "🔔 ALARM: threshold exceeded",
-        "csv_done": "📄 series written → {path}",
+        "csv_done": "📄 logging stopped — {rows} rows written → {path}",
         "snap_done": "📷 snapshot → {path}",
         "unknown": "unknown func {f}",
         "sps": "sps", "pts": "pts",
@@ -109,7 +111,7 @@ T = {
         "connecting": "connexion…", "lost": "● PERTE LIAISON",
         "stopped": "⏸ acquisition arrêtée",
         "alarm": "🔔 ALARME : seuil dépassé",
-        "csv_done": "📄 série écrite → {path}",
+        "csv_done": "📄 enregistrement arrêté — {rows} lignes écrites → {path}",
         "snap_done": "📷 capture → {path}",
         "unknown": "fct inconnue {f}",
         "sps": "éch/s", "pts": "éch",
@@ -275,7 +277,8 @@ class Overlay(tk.Tk):
         self.title(f"DM3068 — {self.ip}")
         self.configure(bg="black")
         self.attributes("-topmost", True)
-        self.bind("<Escape>", lambda e: self.destroy())
+        self.protocol("WM_DELETE_WINDOW", self._quit)
+        self.bind("<Escape>", lambda e: self._quit())
 
         self.series = deque(maxlen=HISTORY)     # (timestamp, value | None=OL)
         self.dirty = False
@@ -283,6 +286,9 @@ class Overlay(tk.Tk):
         self.alarm_threshold = None
         self.last_beep = 0.0
         self.gen = 0
+        self.log_f = None            # fichier CSV d'enregistrement temps réel
+        self.log_count = 0
+        self.log_name = None
 
         top = tk.Frame(self, bg="black")
         top.pack(fill="x", padx=10, pady=(6, 0))
@@ -348,9 +354,8 @@ class Overlay(tk.Tk):
         self.graph_btn = ctl_btn(ctl, "📈", self.toggle_graph, fg="#a6e22e", width=4)
         self.graph_btn.pack(side="left", padx=2)
 
-        self.csv_btn = ctl_btn(ctl, "📄 CSV", self.save_csv, fg="#a6e22e", width=7)
+        self.csv_btn = ctl_btn(ctl, "▶ CSV", self.toggle_log, fg="#a6e22e", width=8)
         self.csv_btn.pack(side="left", padx=2)
-        self.csv_btn.config(state="disabled", disabledforeground="#555555")
 
         self.alarm_btn = ctl_btn(ctl, "🔔", self.set_alarm, fg="#ff8080", width=4)
         self.alarm_btn.pack(side="left", padx=2)
@@ -391,11 +396,30 @@ class Overlay(tk.Tk):
         tk.Label(dlg, text=self.T["set_lang"], font=("Consolas", 11, "bold"),
                  fg="#dddddd", bg="black").grid(row=2, column=0, sticky="w",
                                                 padx=10, pady=(4, 4))
-        lang_var = tk.StringVar(value=dict(LANG_CHOICES)[self.lang])
-        box = tk.OptionMenu(dlg, lang_var, *[lbl for lbl, _ in LANG_CHOICES])
-        box.config(font=("Consolas", 11), bg="#1a1a1a", fg="#dddddd",
-                   activebackground="#333333", bd=0, highlightthickness=0)
-        box.grid(row=3, column=0, sticky="we", padx=10, pady=(0, 12))
+        # two explicit buttons instead of a dropdown (option menus are
+        # unreliable under the modal grab of the dialog)
+        chosen = {"lang": self.lang}
+        lang_btns = {}
+
+        def pick(code):
+            chosen["lang"] = code
+            for lbl, c in LANG_CHOICES:
+                b = lang_btns[c]
+                b.config(bg="#881111" if c == code else "#1a1a1a",
+                         fg="#ffffff" if c == code else "#dddddd")
+
+        langrow = tk.Frame(dlg, bg="black")
+        langrow.grid(row=3, column=0, sticky="w", padx=10, pady=(0, 12))
+        for lbl, c in LANG_CHOICES:
+            b = tk.Button(langrow, text=lbl, width=10, bd=0,
+                          font=("Consolas", 11, "bold"),
+                          fg="#ffffff" if c == self.lang else "#dddddd",
+                          bg="#881111" if c == self.lang else "#1a1a1a",
+                          activebackground="#333333",
+                          activeforeground="#ffffff",
+                          command=lambda c=c: pick(c))
+            b.pack(side="left", padx=(0, 6))
+            lang_btns[c] = b
 
         def on_ok():
             ip = ip_var.get().strip()
@@ -405,11 +429,10 @@ class Overlay(tk.Tk):
                 messagebox.showwarning(self.T["set_title"], self.T["bad_ip"],
                                        parent=dlg)
                 return
-            lang = dict((lbl, c) for lbl, c in LANG_CHOICES)[lang_var.get()]
             with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-                json.dump({"ip": ip, "lang": lang}, f)
+                json.dump({"ip": ip, "lang": chosen["lang"]}, f)
             dlg.destroy()
-            self.apply_settings(ip, lang)
+            self.apply_settings(ip, chosen["lang"])
 
         row = tk.Frame(dlg, bg="black")
         row.grid(row=4, column=0, sticky="e", padx=10, pady=(0, 12))
@@ -434,6 +457,7 @@ class Overlay(tk.Tk):
         if ip_changed:
             self.ip = ip
             self.gen += 1
+            self._log_stop()                     # never mix meters in one file
             self.meter.shutdown()                # kill the old thread promptly
             self.series.clear()
             self.dirty = True
@@ -467,10 +491,8 @@ class Overlay(tk.Tk):
         self.graph_on = not self.graph_on
         if self.graph_on:
             self.canvas.pack(fill="x", padx=8, pady=(0, 8))
-            self.csv_btn.config(state="normal")
         else:
             self.canvas.pack_forget()
-            self.csv_btn.config(state="disabled")
 
     def set_alarm(self):
         if self.alarm_threshold is not None:      # disarm
@@ -487,19 +509,40 @@ class Overlay(tk.Tk):
         self.alarm_threshold = th
         self.alarm_btn.config(text="🔔 ON", fg="#ffffff", bg="#881111")
 
-    def save_csv(self):
-        os.makedirs(LOGS_DIR, exist_ok=True)
-        name = f"{LOGS_DIR}/dm3068_{datetime.datetime.now():%Y%m%d_%H%M%S}.csv"
-        unit = FUNCS[self.func][1] if self.func in FUNCS else "?"
-        with open(name, "w", newline="", encoding="utf-8-sig") as f:
-            w = csv.writer(f, delimiter=";")
-            w.writerow(["timestamp", "epoch_s", "function", f"value ({unit})"])
-            for ts, v in self.series:
-                stamp = datetime.datetime.fromtimestamp(ts).isoformat(timespec="milliseconds")
-                w.writerow([stamp, f"{ts:.3f}", self.func or "?",
-                            "OVERLOAD" if v is None else repr(v)])
-        self.ol_lbl.config(text=self.T["csv_done"].format(path=name), fg="#a6e22e")
-        self.after(3000, lambda: self.ol_lbl.config(text=""))
+    def toggle_log(self):
+        if self.log_f is None:                      # ▶ start recording
+            os.makedirs(LOGS_DIR, exist_ok=True)
+            self.log_name = f"{LOGS_DIR}/dm3068_{datetime.datetime.now():%Y%m%d_%H%M%S}.csv"
+            unit = FUNCS[self.func][1] if self.func in FUNCS else "?"
+            self.log_f = open(self.log_name, "w", newline="", encoding="utf-8-sig")
+            csv.writer(self.log_f, delimiter=";").writerow(
+                ["timestamp", "epoch_s", "function", f"value ({unit})"])
+            self.log_count = 0
+            self.csv_btn.config(text="■ CSV", fg="#ff5555", bg="#401010",
+                                activebackground="#662020")
+            self.stats_lbl.config(fg="#ff8888")
+        else:                                       # ■ stop recording
+            self._log_stop()
+            self.ol_lbl.config(text=self.T["csv_done"].format(
+                rows=self.log_count, path=self.log_name), fg="#a6e22e")
+            self.after(6000, lambda: self.ol_lbl.config(text=""))
+
+    def _log_stop(self):
+        if self.log_f is not None:
+            try:
+                self.log_f.close()
+            except OSError:
+                pass
+        self.log_f = None
+        self.csv_btn.config(text="▶ CSV", fg="#a6e22e", bg="#1a1a1a",
+                            activebackground="#333333")
+        self.stats_lbl.config(fg="#9aa0a6")
+
+    def _quit(self):
+        if self.log_f is not None:
+            self._log_stop()
+        self.meter.shutdown()
+        self.destroy()
 
     def snapshot(self):
         os.makedirs(CAPTURES_DIR, exist_ok=True)
@@ -563,6 +606,21 @@ class Overlay(tk.Tk):
                         self.ol_lbl.config(text="")
                         self.series.append((ts, val))
                         self.dirty = True
+                    # live CSV logging (real readings, overloads kept)
+                    if self.log_f is not None:
+                        stamp = datetime.datetime.fromtimestamp(
+                            ts).isoformat(timespec="milliseconds")
+                        if err is not None:
+                            value = "ERROR"
+                        elif val >= OVERLOAD:
+                            value = "OVERLOAD"
+                        else:
+                            value = repr(val)
+                        csv.writer(self.log_f, delimiter=";").writerow(
+                            [stamp, f"{ts:.3f}", func, value])
+                        self.log_f.flush()
+                        self.log_count += 1
+
                     # alarm (real readings only)
                     if (self.alarm_threshold is not None and err is None
                             and val < OVERLOAD and abs(val) >= self.alarm_threshold):
@@ -587,16 +645,18 @@ class Overlay(tk.Tk):
     def update_stats(self):
         vals = [v for _, v in self.series if v is not None]
         hz = self.measured_hz()
+        rec = f"   ·   ● REC {self.log_count}" if self.log_f is not None else ""
         if not vals:
-            self.stats_lbl.config(text=f"({hz})" if hz else "")
+            self.stats_lbl.config(text=(f"({hz})" if hz else "") + rec)
             return
         lo, hi = min(vals), max(vals)
         avg = sum(vals) / len(vals)
         f3 = (lambda v: " ".join(fmt(v, self.func))
               if self.func in FUNCS else "?")
+        rec = f"   ·   ● REC {self.log_count}" if self.log_f is not None else ""
         self.stats_lbl.config(
             text=f"min {f3(lo)}   ·   {self.T['avg']} {f3(avg)}   ·   "
-                 f"max {f3(hi)}   ·   {hz}")
+                 f"max {f3(hi)}   ·   {hz}{rec}")
 
     def measured_hz(self):
         pts = [t for t, v in self.series if v is not None]
