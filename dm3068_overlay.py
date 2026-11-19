@@ -102,7 +102,8 @@ T = {
         "alarm_title": "Alarm",
         "alarm_prompt": "Alarm threshold in {unit} (absolute value):",
         "set_title": "Settings", "set_ip": "IP address:",
-        "set_lang": "Language:", "ok": "OK", "cancel": "Cancel",
+        "set_lang": "Language:", "set_touch": "Touch mode (big buttons):",
+        "on": "ON", "off": "OFF", "ok": "OK", "cancel": "Cancel",
         "bad_ip": "Invalid IP address.",
         "waiting": "waiting for points…",
     },
@@ -124,7 +125,8 @@ T = {
         "alarm_title": "Alarme",
         "alarm_prompt": "Seuil d'alarme en {unit} (valeur absolue) :",
         "set_title": "Configuration", "set_ip": "Adresse IP :",
-        "set_lang": "Langue :", "ok": "OK", "cancel": "Annuler",
+        "set_lang": "Langue :", "set_touch": "Mode tactile (gros boutons) :",
+        "on": "ACTIVÉ", "off": "ÉTEINT", "ok": "OK", "cancel": "Annuler",
         "bad_ip": "Adresse IP invalide.",
         "waiting": "en attente de points…",
     },
@@ -133,11 +135,11 @@ LANG_CHOICES = [("English", "en"), ("Français", "fr")]
 
 
 def load_config():
-    cfg = {"ip": DEFAULT_IP, "lang": "en"}
+    cfg = {"ip": DEFAULT_IP, "lang": "en", "touch": False}
     try:
         with open(CONFIG_PATH, encoding="utf-8") as f:
             cfg.update({k: v for k, v in json.load(f).items()
-                        if k in ("ip", "lang")})
+                        if k in ("ip", "lang", "touch")})
     except (OSError, ValueError):
         pass
     return cfg
@@ -277,6 +279,7 @@ class Overlay(tk.Tk):
         self.lang = cfg["lang"] if cfg["lang"] in ("en", "fr") else "en"
         self.ip = cfg["ip"]
         self.T = T[self.lang]
+        self.touch = bool(cfg.get("touch", False))
 
         self.title(f"DM3068 — {self.ip}")
         self.configure(bg="black")
@@ -335,6 +338,9 @@ class Overlay(tk.Tk):
                                 highlightthickness=1, highlightbackground="#333333")
         self.graph_on = False
 
+        # widgets that grow in touch mode: (widget, font OFF, font ON, padx)
+        self.touch_btns = []
+
         # --- function buttons ---
         btns = tk.Frame(self, bg="black")
         btns.pack(fill="x", padx=8)
@@ -345,6 +351,8 @@ class Overlay(tk.Tk):
                           activeforeground="#ffffff",
                           command=lambda c=code: self.switch_to(c))
             b.pack(side="left", padx=2)
+            self.touch_btns.append((b, ("Consolas", 11, "bold"),
+                                    ("Consolas", 13, "bold"), 2))
 
         # --- control buttons ---
         def ctl_btn(parent, text, cb, fg="#dddddd", width=3, font=None):
@@ -355,38 +363,63 @@ class Overlay(tk.Tk):
 
         ctl = tk.Frame(self, bg="black")
         ctl.pack(fill="x", padx=8, pady=(6, 8))
+
+        def reg(w, f_off, f_on, padx=(2, 2)):
+            self.touch_btns.append((w, f_off, f_on, padx))
+
         self.speed_lbl = tk.Label(ctl, text="⏱ MAX", font=("Consolas", 11, "bold"),
                                   fg="#66d9ef", bg="black", width=9, anchor="w")
         self.speed_lbl.pack(side="left", padx=(2, 4))
-        ctl_btn(ctl, "−", lambda: self.bump_speed(-1), fg="#66d9ef").pack(side="left", padx=2)
-        ctl_btn(ctl, "+", lambda: self.bump_speed(+1), fg="#66d9ef").pack(side="left", padx=2)
+        reg(self.speed_lbl, ("Consolas", 11, "bold"), ("Consolas", 13, "bold"), (2, 4))
+
+        b = ctl_btn(ctl, "−", lambda: self.bump_speed(-1), fg="#66d9ef")
+        b.pack(side="left", padx=2)
+        reg(b, ("Consolas", 11, "bold"), ("Consolas", 13, "bold"))
+        b = ctl_btn(ctl, "+", lambda: self.bump_speed(+1), fg="#66d9ef")
+        b.pack(side="left", padx=2)
+        reg(b, ("Consolas", 11, "bold"), ("Consolas", 13, "bold"))
 
         self.run_btn = ctl_btn(ctl, "⏸", self.toggle_run, fg="#ffaa00", width=4)
         self.run_btn.pack(side="left", padx=(8, 2))
+        reg(self.run_btn, ("Consolas", 11, "bold"), ("Consolas", 13, "bold"), (8, 2))
         self.clear_btn = ctl_btn(ctl, self.T["clear"], self.clear_series,
                                  fg="#dddddd", width=7)
         self.clear_btn.pack(side="left", padx=2)
+        reg(self.clear_btn, ("Consolas", 11, "bold"), ("Consolas", 13, "bold"))
         self.graph_btn = ctl_btn(ctl, "📈", self.toggle_graph, fg="#a6e22e", width=4)
         self.graph_btn.pack(side="left", padx=2)
+        reg(self.graph_btn, ("Consolas", 11, "bold"), ("Consolas", 13, "bold"))
 
         self.csv_btn = ctl_btn(ctl, "▶ CSV", self.toggle_log, fg="#a6e22e", width=8)
         self.csv_btn.pack(side="left", padx=2)
+        reg(self.csv_btn, ("Consolas", 11, "bold"), ("Consolas", 13, "bold"))
 
         self.alarm_btn = ctl_btn(ctl, "🔔", self.set_alarm, fg="#ff8080", width=4)
         self.alarm_btn.pack(side="left", padx=2)
+        reg(self.alarm_btn, ("Consolas", 11, "bold"), ("Consolas", 13, "bold"))
 
+        icon_off = self.icon_font or ("Consolas", 11, "bold")
+        icon_on = ("Segoe MDL2 Assets", 15) if self.icon_font else \
+            ("Consolas", 13, "bold")
         if ImageGrab is not None:
-            ctl_btn(ctl, "📷", self.snapshot, fg="#aaaaaa", width=4).pack(side="left", padx=2)
-        ctl_btn(ctl, folder, self.open_folder, fg="#e8c86e", width=4,
-                font=self.icon_font).pack(side="left", padx=2)
-        ctl_btn(ctl, gear, self.open_settings, fg="#bbbbbb", width=4,
-                font=self.icon_font).pack(side="left", padx=2)
+            b = ctl_btn(ctl, "📷", self.snapshot, fg="#aaaaaa", width=4)
+            b.pack(side="left", padx=2)
+            reg(b, icon_off, icon_on)
+        b = ctl_btn(ctl, folder, self.open_folder, fg="#e8c86e", width=4,
+                    font=self.icon_font)
+        b.pack(side="left", padx=2)
+        reg(b, icon_off, icon_on)
+        b = ctl_btn(ctl, gear, self.open_settings, fg="#bbbbbb", width=4,
+                    font=self.icon_font)
+        b.pack(side="left", padx=2)
+        reg(b, icon_off, icon_on)
 
         self.q = queue.Queue()
         self.meter = Meter(self.q, self.ip, self.gen)
         self.meter.start()
         self.after(70, self.poll)
         self.after(140, self.redraw)
+        self.apply_touch(self.touch)
 
         if "--graph" in sys.argv:                # start with graph open
             self.toggle_graph()
@@ -439,6 +472,23 @@ class Overlay(tk.Tk):
             b.pack(side="left", padx=(0, 6))
             lang_btns[c] = b
 
+        tk.Label(dlg, text=self.T["set_touch"], font=("Consolas", 11, "bold"),
+                 fg="#dddddd", bg="black").grid(row=4, column=0, sticky="w",
+                                                padx=10, pady=(4, 4))
+        touch_chosen = {"on": self.touch}
+
+        def ttoggle():
+            touch_chosen["on"] = not touch_chosen["on"]
+            tbtn.config(bg="#1f7a1f" if touch_chosen["on"] else "#1a1a1a",
+                        text=self.T["on"] if touch_chosen["on"] else self.T["off"])
+
+        tbtn = tk.Button(dlg, text=self.T["on"] if self.touch else self.T["off"],
+                         width=8, bd=0, font=("Consolas", 11, "bold"),
+                         fg="#ffffff", bg="#1f7a1f" if self.touch else "#1a1a1a",
+                         activebackground="#333333", activeforeground="#ffffff",
+                         command=ttoggle)
+        tbtn.grid(row=5, column=0, sticky="w", padx=10, pady=(0, 12))
+
         def on_ok():
             ip = ip_var.get().strip()
             try:
@@ -448,12 +498,13 @@ class Overlay(tk.Tk):
                                        parent=dlg)
                 return
             with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-                json.dump({"ip": ip, "lang": chosen["lang"]}, f)
+                json.dump({"ip": ip, "lang": chosen["lang"],
+                           "touch": touch_chosen["on"]}, f)
             dlg.destroy()
-            self.apply_settings(ip, chosen["lang"])
+            self.apply_settings(ip, chosen["lang"], touch_chosen["on"])
 
         row = tk.Frame(dlg, bg="black")
-        row.grid(row=4, column=0, sticky="e", padx=10, pady=(0, 12))
+        row.grid(row=6, column=0, sticky="e", padx=10, pady=(0, 12))
         tk.Button(row, text=self.T["cancel"], width=8, bd=0,
                   font=("Consolas", 11, "bold"), fg="#dddddd", bg="#1a1a1a",
                   activebackground="#333333",
@@ -462,15 +513,19 @@ class Overlay(tk.Tk):
                   font=("Consolas", 11, "bold"), fg="#a6e22e", bg="#1a1a1a",
                   activebackground="#333333", command=on_ok).pack(side="left")
 
-    def apply_settings(self, ip, lang):
+    def apply_settings(self, ip, lang, touch):
         lang_changed = lang != self.lang
         ip_changed = ip != self.ip
+        touch_changed = bool(touch) != self.touch
 
         if lang_changed:
             self.lang = lang
             self.T = T[lang]
             self.clear_btn.config(text=self.T["clear"])
             self.apply_func(self.func)           # refresh the badge wording
+
+        if touch_changed:
+            self.apply_touch(touch)
 
         if ip_changed:
             self.ip = ip
@@ -491,6 +546,14 @@ class Overlay(tk.Tk):
 
     def switch_to(self, code):
         self.meter.desired_func = code
+
+    def apply_touch(self, on):
+        """Big-button mode: taller targets (≈44 px) + larger fonts."""
+        self.touch = bool(on)
+        for w, f_off, f_on, padx in self.touch_btns:
+            w.config(font=f_on if self.touch else f_off)
+            w.pack_forget()
+            w.pack(side="left", padx=padx, ipady=10 if self.touch else 0)
 
     def bump_speed(self, direction):
         self.meter.set_speed(self.meter.speed_idx + direction)

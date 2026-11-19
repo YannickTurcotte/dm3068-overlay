@@ -22,8 +22,8 @@ graph — the kind of inset you see in repair videos on YouTube, but wired to
 - **Speed − / +**: MAX → ÷4 → ÷10 → 1/5 s (polling cadence)
 - **▶/⏸ start-stop** acquisition (series kept, graph frozen)
 - **🧹 Clear** wipes the series, stats and graph
-- **⚙ Settings**: IP address + language, persisted to `dm3068_overlay.json`
-  next to the script
+- **⚙ Settings**: IP address, language, **touch mode** (big ≥ 44 px buttons,
+  off by default) — persisted to `dm3068_overlay.json` next to the script
 - **▶/■ CSV live logging**: click ▶ to start recording to `logs/*.csv`,
   ■ to stop — rows are written in real time and a `● REC n` counter shows in
   the stats line while recording (works with or without the graph open)
@@ -60,7 +60,7 @@ graph — the kind of inset you see in repair videos on YouTube, but wired to
 | `🔔` | arm/disarm the alarm (threshold asked in base unit) |
 | `📷` | save a PNG snapshot to `captures/` |
 | `📂` | open the app folder in Explorer (captures/, logs/ live next to the script) |
-| `⚙` | settings: IP address, language (English / Français) |
+| `⚙` | settings: IP address, language (English / Français), touch mode (big buttons for touchscreens, off by default) |
 
 > The graph is wiped on every **function change** on purpose: units and
 > scales are not comparable across functions.
