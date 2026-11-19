@@ -41,6 +41,11 @@ graph — the kind of inset you see in repair videos on YouTube, but wired to
 - Optional: `pip install pillow` for the 📷 button
 - A Rigol DM3068 on the network (raw SCPI, TCP port **5555**)
 
+**Compatibility**: tested on a DM3068 (fw 01.01.00). The DM3058 (5½ digit
+sibling, same firmware family) should work the same way — untested so far.
+Not sure about your meter? Run `python compat_check.py <meter-ip>` and
+please report the output on the forum thread or as a GitHub issue.
+
 ## Install
 
 1. Clone or copy the folder; your meter's IP is asked once in the ⚙ settings
