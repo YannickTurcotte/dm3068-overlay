@@ -23,7 +23,11 @@ graph — the kind of inset you see in repair videos on YouTube, but wired to
 - **▶/⏸ start-stop** acquisition (series kept, graph frozen)
 - **🧹 Clear** wipes the series, stats and graph
 - **⚙ Settings**: IP address, language, **touch mode** (big ≥ 44 px buttons,
-  off by default) — persisted to `dm3068_overlay.json` next to the script
+  off by default), **web display** — persisted to `dm3068_overlay.json`
+  next to the script
+- **🌐 Web display** (⚙ toggle or `--web`): a transparent page for OBS
+  Browser Sources (`http://localhost:8123`) and for phones/tablets on the
+  LAN (`http://<pc-ip>:8123`, add `?bg=black` for a dark background)
 - **▶/■ CSV live logging**: click ▶ to start recording to `logs/*.csv`,
   ■ to stop — rows are written in real time and a `● REC n` counter shows in
   the stats line while recording (works with or without the graph open)
@@ -60,7 +64,7 @@ graph — the kind of inset you see in repair videos on YouTube, but wired to
 | `🔔` | arm/disarm the alarm (threshold asked in base unit) |
 | `📷` | save a PNG snapshot to `captures/` |
 | `📂` | open the app folder in Explorer (captures/, logs/ live next to the script) |
-| `⚙` | settings: IP address, language (English / Français), touch mode (big buttons for touchscreens, off by default) |
+| `⚙` | settings: IP address, language (English / Français), touch mode, web display |
 
 > The graph is wiped on every **function change** on purpose: units and
 > scales are not comparable across functions.
@@ -87,6 +91,21 @@ On this DM3068 firmware (01.01.00):
   DIOD ≈ 25 sps, ACV/ACI ≈ 1 sps, FREQ/PER ≈ 1 sps.
 - A multimeter measures **one quantity at a time**; to follow V and A at once
   like a bench supply does, you need two instruments.
+
+## Web display (OBS / phone)
+
+Turn on **⚙ → Web display** (or launch with `--web`), then:
+
+- **OBS** — Sources → **+** → **Browser** → URL `http://localhost:8123`
+  (e.g. 1280×360). The page background is **transparent**: only the digits,
+  the `OVERLOAD` banner and the stats float over your scene — no window
+  capture, no chroma key. This is exactly the "repair-video inset" look.
+- **Phone / tablet** on the same network — open `http://<pc-ip>:8123`
+  (Windows will ask for firewall permission on first run). Add `?bg=black`
+  for a readable dark background; the flag works in OBS too.
+
+The web display only *shows* what the app already reads — it never opens a
+second connection to the meter. The port is the `WEB_PORT` constant (8123).
 
 ## Known limits
 

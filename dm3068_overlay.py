@@ -19,6 +19,9 @@ Features:
     "● REC n" counter in the stats line while recording
   - 🔔 threshold alarm with beep, 📷 window snapshot (Pillow)
   - 📂 opens the app folder, ⚙ settings (Segoe MDL2 Assets icons on Windows)
+  - 🌐 optional built-in web display (⚙ toggle or --web): transparent page
+    for OBS Browser Sources (http://localhost:8123) and phones on the LAN
+    (http://<pc-ip>:8123 — add ?bg=black for a dark background)
   - start with graph open: python dm3068_overlay.py --graph
 
 Protocol: raw SCPI over TCP port 5555 (no dependencies required).
@@ -36,6 +39,7 @@ import time
 import tkinter as tk
 import tkinter.font as tkfont
 from collections import deque
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from tkinter import simpledialog, messagebox
 
 try:
@@ -55,8 +59,9 @@ CAPTURES_DIR = "captures"
 LOGS_DIR = "logs"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "dm3068_overlay.json")
-GEAR_GLYPH = chr(0xE713)       # Segoe MDL2 Assets "Setting" (real gear)
-FOLDER_GLYPH = chr(0xE8B7)     # Segoe MDL2 Assets "Folder"
+WEB_PORT = 8123               # built-in web display (OBS Browser Source)
+GEAR_GLYPH = chr(0xE713)      # Segoe MDL2 Assets "Setting" (real gear)
+FOLDER_GLYPH = chr(0xE8B7)    # Segoe MDL2 Assets "Folder"
 
 # function code returned by :FUNCtion?  ->  (MEAS command, base unit)
 FUNCS = {
@@ -95,6 +100,9 @@ T = {
         "alarm": "🔔 ALARM: threshold exceeded",
         "csv_done": "📄 logging stopped — {rows} rows written → {path}",
         "snap_done": "📷 snapshot → {path}",
+        "web_on": "🌐 web display ON → http://localhost:8123",
+        "web_off": "🌐 web display OFF",
+        "web_busy": "⚠ web port 8123 busy — display off",
         "unknown": "unknown func {f}",
         "sps": "sps", "pts": "pts",
         "avg": "avg",
@@ -103,6 +111,7 @@ T = {
         "alarm_prompt": "Alarm threshold in {unit} (absolute value):",
         "set_title": "Settings", "set_ip": "IP address:",
         "set_lang": "Language:", "set_touch": "Touch mode (big buttons):",
+        "set_web": "Web display (OBS / browser):",
         "on": "ON", "off": "OFF", "ok": "OK", "cancel": "Cancel",
         "bad_ip": "Invalid IP address.",
         "waiting": "waiting for points…",
@@ -118,6 +127,9 @@ T = {
         "alarm": "🔔 ALARME : seuil dépassé",
         "csv_done": "📄 enregistrement arrêté — {rows} lignes écrites → {path}",
         "snap_done": "📷 capture → {path}",
+        "web_on": "🌐 affichage web ACTIVÉ → http://localhost:8123",
+        "web_off": "🌐 affichage web DÉSACTIVÉ",
+        "web_busy": "⚠ port web 8123 déjà occupé — affichage désactivé",
         "unknown": "fct inconnue {f}",
         "sps": "éch/s", "pts": "éch",
         "avg": "moy",
@@ -126,6 +138,7 @@ T = {
         "alarm_prompt": "Seuil d'alarme en {unit} (valeur absolue) :",
         "set_title": "Configuration", "set_ip": "Adresse IP :",
         "set_lang": "Langue :", "set_touch": "Mode tactile (gros boutons) :",
+        "set_web": "Affichage web (OBS / navigateur) :",
         "on": "ACTIVÉ", "off": "ÉTEINT", "ok": "OK", "cancel": "Annuler",
         "bad_ip": "Adresse IP invalide.",
         "waiting": "en attente de points…",
@@ -135,11 +148,11 @@ LANG_CHOICES = [("English", "en"), ("Français", "fr")]
 
 
 def load_config():
-    cfg = {"ip": DEFAULT_IP, "lang": "en", "touch": False}
+    cfg = {"ip": DEFAULT_IP, "lang": "en", "touch": False, "web": False}
     try:
         with open(CONFIG_PATH, encoding="utf-8") as f:
             cfg.update({k: v for k, v in json.load(f).items()
-                        if k in ("ip", "lang", "touch")})
+                        if k in ("ip", "lang", "touch", "web")})
     except (OSError, ValueError):
         pass
     return cfg
@@ -154,6 +167,102 @@ def fmt(val, func):
         if abs(val) >= p:
             return f"{val / p:.3f}", f"{sym}{FUNCS[func][1]}"
     return f"{val:.3f}", FUNCS[func][1]
+
+
+class WebServer:
+    """Tiny stdlib HTTP server exposing the live reading to OBS Browser
+    Sources and phones:  GET /     -> HTML page (transparent background by
+                                     default, ?bg=black for dark),
+                         GET /api  -> JSON snapshot, polled by the page."""
+
+    def __init__(self, app, port=WEB_PORT):
+        self.app = app
+        self.port = port
+        self.httpd = None
+
+    def start(self):
+        try:
+            self.httpd = _HTTPD(("0.0.0.0", self.port), _make_handler(self.app))
+        except OSError:
+            self.app.q.put((self.app.gen, "webfail"))
+            return False
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        return True
+
+    def stop(self):
+        if self.httpd is None:
+            return
+        httpd, self.httpd = self.httpd, None
+        def close():
+            httpd.shutdown()
+            httpd.server_close()
+        threading.Thread(target=close, daemon=True).start()
+
+
+class _HTTPD(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
+def _make_handler(app):
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            try:
+                if self.path.startswith("/api"):
+                    body = json.dumps(app.web_snapshot()).encode()
+                    ctype = "application/json"
+                else:
+                    body = BUILD_HTML.replace("__BG__", "#000"
+                                              if "bg=black" in self.path
+                                              else "transparent").encode()
+                    ctype = "text/html; charset=utf-8"
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+        def log_message(self, *args):
+            pass
+    return Handler
+
+
+BUILD_HTML = """<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  html,body{margin:0;height:100%;background:__BG__;}
+  body{display:flex;flex-direction:column;justify-content:center;align-items:center;
+       font-family:Consolas,monospace;color:#ff1a1a;overflow:hidden;
+       text-shadow:0 0 4px rgba(0,0,0,.55);}
+  #f{color:#ffd400;font-size:4vmin;font-weight:bold;}
+  #row{display:flex;align-items:baseline;}
+  #v{font-size:20vmin;font-weight:bold;line-height:1;}
+  #u{font-size:8vmin;font-weight:bold;margin-left:1vmin;}
+  #ol{color:#00ffff;font-size:7vmin;font-weight:bold;min-height:8vmin;
+      text-shadow:0 0 6px rgba(0,0,0,.6);}
+  #s{color:#c8ccd0;font-size:3vmin;text-shadow:0 0 4px rgba(0,0,0,.7);}
+</style></head><body>
+<div id="f">—</div>
+<div id="row"><span id="v">- - - -</span><span id="u"></span></div>
+<div id="ol"></div>
+<div id="s"></div>
+<script>
+async function tick(){
+  try{
+    const d = await (await fetch("/api")).json();
+    document.getElementById("f").textContent = d.func;
+    document.getElementById("v").textContent = d.value;
+    document.getElementById("u").textContent = d.unit;
+    document.getElementById("ol").textContent = d.overload ? "OVERLOAD" : "";
+    document.getElementById("s").textContent = d.stats;
+  }catch(e){}
+}
+setInterval(tick, 250); tick();
+</script></body></html>
+"""
 
 
 class Meter(threading.Thread):
@@ -280,6 +389,14 @@ class Overlay(tk.Tk):
         self.ip = cfg["ip"]
         self.T = T[self.lang]
         self.touch = bool(cfg.get("touch", False))
+        self.want_web = bool(cfg.get("web", False)) or "--web" in sys.argv
+
+        # snapshot shared with the web display
+        self.cur_digits = "- - - -"
+        self.cur_unit = ""
+        self.cur_overload = False
+        self.web_on = False
+        self.webserver = None
 
         self.title(f"DM3068 — {self.ip}")
         self.configure(bg="black")
@@ -420,6 +537,8 @@ class Overlay(tk.Tk):
         self.after(70, self.poll)
         self.after(140, self.redraw)
         self.apply_touch(self.touch)
+        if self.want_web:
+            self._web_start()
 
         if "--graph" in sys.argv:                # start with graph open
             self.toggle_graph()
@@ -489,6 +608,23 @@ class Overlay(tk.Tk):
                          command=ttoggle)
         tbtn.grid(row=5, column=0, sticky="w", padx=10, pady=(0, 12))
 
+        tk.Label(dlg, text=self.T["set_web"], font=("Consolas", 11, "bold"),
+                 fg="#dddddd", bg="black").grid(row=6, column=0, sticky="w",
+                                                padx=10, pady=(4, 4))
+        web_chosen = {"on": self.web_on}
+
+        def wtoggle():
+            web_chosen["on"] = not web_chosen["on"]
+            wbtn.config(bg="#1f7a1f" if web_chosen["on"] else "#1a1a1a",
+                        text=self.T["on"] if web_chosen["on"] else self.T["off"])
+
+        wbtn = tk.Button(dlg, text=self.T["on"] if self.web_on else self.T["off"],
+                         width=8, bd=0, font=("Consolas", 11, "bold"),
+                         fg="#ffffff", bg="#1f7a1f" if self.web_on else "#1a1a1a",
+                         activebackground="#333333", activeforeground="#ffffff",
+                         command=wtoggle)
+        wbtn.grid(row=7, column=0, sticky="w", padx=10, pady=(0, 12))
+
         def on_ok():
             ip = ip_var.get().strip()
             try:
@@ -499,12 +635,14 @@ class Overlay(tk.Tk):
                 return
             with open(CONFIG_PATH, "w", encoding="utf-8") as f:
                 json.dump({"ip": ip, "lang": chosen["lang"],
-                           "touch": touch_chosen["on"]}, f)
+                           "touch": touch_chosen["on"],
+                           "web": web_chosen["on"]}, f)
             dlg.destroy()
-            self.apply_settings(ip, chosen["lang"], touch_chosen["on"])
+            self.apply_settings(ip, chosen["lang"], touch_chosen["on"],
+                                web_chosen["on"])
 
         row = tk.Frame(dlg, bg="black")
-        row.grid(row=6, column=0, sticky="e", padx=10, pady=(0, 12))
+        row.grid(row=8, column=0, sticky="e", padx=10, pady=(0, 12))
         tk.Button(row, text=self.T["cancel"], width=8, bd=0,
                   font=("Consolas", 11, "bold"), fg="#dddddd", bg="#1a1a1a",
                   activebackground="#333333",
@@ -513,10 +651,11 @@ class Overlay(tk.Tk):
                   font=("Consolas", 11, "bold"), fg="#a6e22e", bg="#1a1a1a",
                   activebackground="#333333", command=on_ok).pack(side="left")
 
-    def apply_settings(self, ip, lang, touch):
+    def apply_settings(self, ip, lang, touch, web):
         lang_changed = lang != self.lang
         ip_changed = ip != self.ip
         touch_changed = bool(touch) != self.touch
+        web_changed = bool(web) != self.web_on
 
         if lang_changed:
             self.lang = lang
@@ -527,6 +666,12 @@ class Overlay(tk.Tk):
         if touch_changed:
             self.apply_touch(touch)
 
+        if web_changed:
+            if web:
+                self._web_start()
+            else:
+                self._web_stop()
+
         if ip_changed:
             self.ip = ip
             self.gen += 1
@@ -536,7 +681,8 @@ class Overlay(tk.Tk):
             self.dirty = True
             self.func = None
             self.func_lbl.config(text="—")
-            self.title(f"DM3068 — {self.ip}")
+            self.title(f"DM3068 — {self.ip}" +
+                       (f" · 🌐 :{WEB_PORT}" if self.web_on else ""))
             self.stat_lbl.config(text=self.T["connecting"], fg="#888888")
             self.ol_lbl.config(text="")
             self.meter = Meter(self.q, self.ip, self.gen)
@@ -642,6 +788,47 @@ class Overlay(tk.Tk):
             import subprocess
             subprocess.Popen(["xdg-open", BASE_DIR])
 
+    # ---------------- web display ----------------
+
+    def web_snapshot(self):
+        if self.func in FUNCS:
+            fname = f"{self.func} — {self.T['funcs'][self.func]}"
+        else:
+            fname = str(self.func) if self.func else "—"
+        return {
+            "func": fname,
+            "value": self.cur_digits,
+            "unit": self.cur_unit,
+            "overload": self.cur_overload,
+            "stats": self.stats_text(),
+        }
+
+    def _web_start(self):
+        if self.webserver is None:
+            self.webserver = WebServer(self)
+            if not self.webserver.start():
+                self.webserver = None
+                return                   # "webfail" arrives via the queue
+        self.web_on = True
+        self._refresh_title()
+        self.ol_lbl.config(text=self.T["web_on"], fg="#a6e22e")
+        self.after(6000, lambda: self.ol_lbl.config(text=""))
+
+    def _web_stop(self):
+        if self.webserver is not None:
+            self.webserver.stop()
+            self.webserver = None
+        self.web_on = False
+        self._refresh_title()
+        self.ol_lbl.config(text=self.T["web_off"], fg="#9aa0a6")
+        self.after(4000, lambda: self.ol_lbl.config(text=""))
+
+    def _refresh_title(self):
+        t = f"DM3068 — {self.ip}"
+        if self.web_on:
+            t += f" · 🌐 :{WEB_PORT}"
+        self.title(t)
+
     # ---------------- UI loops ----------------
 
     def apply_func(self, code):
@@ -672,16 +859,25 @@ class Overlay(tk.Tk):
                     self.apply_func(msg[2])
                 elif kind == "stopped":
                     self.ol_lbl.config(text=self.T["stopped"], fg="#ffaa00")
+                elif kind == "webfail":
+                    self.webserver = None
+                    self.web_on = False
+                    self._refresh_title()
+                    self.ol_lbl.config(text=self.T["web_busy"], fg="#ff8080")
                 elif kind == "reading":
                     _, _, func, val, err, ts = msg
                     self.apply_func(func)
                     if err is not None:
+                        self.cur_digits, self.cur_unit = "!  ERR", ""
+                        self.cur_overload = False
                         self.val_lbl.config(text="!  ERR")
                         self.unit_lbl.config(text="")
                         self.ol_lbl.config(
                             text=self.T["unknown"].format(f=func)
                             if err == "unknown" else str(err), fg="#ff8080")
                     elif val >= OVERLOAD:
+                        self.cur_digits, self.cur_unit = "- - - -", ""
+                        self.cur_overload = True
                         self.val_lbl.config(text="- - - -")
                         self.unit_lbl.config(text="")
                         self.ol_lbl.config(text="OVERLOAD", fg="#00ffff")
@@ -689,6 +885,8 @@ class Overlay(tk.Tk):
                         self.dirty = True
                     else:
                         digits, unit = fmt(val, func)
+                        self.cur_digits, self.cur_unit = digits, unit
+                        self.cur_overload = False
                         self.val_lbl.config(text=digits)
                         self.unit_lbl.config(text=unit)
                         self.ol_lbl.config(text="")
@@ -730,21 +928,21 @@ class Overlay(tk.Tk):
             self.update_stats()
         self.after(140, self.redraw)
 
-    def update_stats(self):
+    def stats_text(self):
         vals = [v for _, v in self.series if v is not None]
         hz = self.measured_hz()
         rec = f"   ·   ● REC {self.log_count}" if self.log_f is not None else ""
         if not vals:
-            self.stats_lbl.config(text=(f"({hz})" if hz else "") + rec)
-            return
+            return (f"({hz})" if hz else "") + rec
         lo, hi = min(vals), max(vals)
         avg = sum(vals) / len(vals)
         f3 = (lambda v: " ".join(fmt(v, self.func))
               if self.func in FUNCS else "?")
-        rec = f"   ·   ● REC {self.log_count}" if self.log_f is not None else ""
-        self.stats_lbl.config(
-            text=f"min {f3(lo)}   ·   {self.T['avg']} {f3(avg)}   ·   "
-                 f"max {f3(hi)}   ·   {hz}{rec}")
+        return (f"min {f3(lo)}   ·   {self.T['avg']} {f3(avg)}   ·   "
+                f"max {f3(hi)}   ·   {hz}{rec}")
+
+    def update_stats(self):
+        self.stats_lbl.config(text=self.stats_text())
 
     def measured_hz(self):
         pts = [t for t, v in self.series if v is not None]
