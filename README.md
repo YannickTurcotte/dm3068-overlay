@@ -1,93 +1,97 @@
 # 📟 DM3068 Overlay
 
-Afficheur de bench **toujours au premier plan** pour le multimètre **Rigol DM3068** :
-gros chiffres rouges sur fond noir, bannière `OVERLOAD` cyan, graphique défilant —
-le style des incrustations qu'on voit dans les vidéos de réparation sur YouTube,
-mais branché sur **votre** multimètre en réseau.
+A floating, **always-on-top bench readout** for the **Rigol DM3068** digital
+multimeter: big red digits on black, a cyan `OVERLOAD` banner, a scrolling
+graph — the kind of inset you see in repair videos on YouTube, but wired to
+**your** meter over the network.
 
-![Vue complète](docs/overlay_complet.png)
+*Interface available in **English** (default) and **French** — pick it in the ⚙ settings.*
 
-## Fonctionnalités
+![Full view](docs/overlay_complet.png)
 
-- **Lecture en direct** (≈ 1–28 échantillons/s selon la fonction) avec préfixes SI
-  lisibles : `2.212 µV`, `-3.306 mV`, `198.492 Ω`, `60.006 Hz`…
-- **11 fonctions pilotables à distance** : V⎓ V~ A⎓ A~ Ω Ω4f CONT Hz s DIODE F
-  (les boutons basculent le multimètre par SCPI, le badge suit aussi les
-  changements faits au panneau physique)
-- **OVERLOAD** affiché en cyan quand l'entrée sort d'échelle (`9.9E37`)
-- **Graphique défilant** (600 points, échelle automatique, les surcharges
-  coupent le trait) + **stats min · moyenne · max · taux réel mesuré**
-- **Vitesse +/−** : MAX → ÷4 → ÷10 → 1/5 s (cadence d'interrogation)
-- **▶/⏸ start-stop** d'acquisition (la série est conservée, graphique gelé)
-- **📄 Export CSV** de la série affichée (horodatage, fonction, valeur)
-- **🔔 Alarme** : seuil en unité de base, bip sonore + alerte au dépassement
-- **📷 Capture PNG** de la fenêtre (nécessite Pillow, optionnel)
-- Fenêtre toujours au premier plan, déplaçable ; `Échap` ou croix pour fermer
+## Features
 
-## Prérequis
+- **Live reading** (≈ 1–28 samples/s depending on function) with readable SI
+  prefixes: `2.212 µV`, `-3.306 mV`, `198.492 Ω`, `60.006 Hz`…
+- **11 remotely switchable functions**: V⎓ V~ A⎓ A~ Ω Ω4f CONT Hz s DIODE F —
+  the buttons switch the meter over SCPI, and the badge follows changes made
+  on the meter's own panel too
+- **OVERLOAD** banner (cyan) when the input is out of range (`9.9E37`)
+- **Scrolling graph** (600 points, auto-scaled, overloads cut the trace) with
+  **min · avg · max · measured rate** stats
+- **Speed − / +**: MAX → ÷4 → ÷10 → 1/5 s (polling cadence)
+- **▶/⏸ start-stop** acquisition (series kept, graph frozen)
+- **🧹 Clear** wipes the series, stats and graph
+- **⚙ Settings**: IP address + language, persisted to `dm3068_overlay.json`
+  next to the script
+- **📄 CSV export** of the displayed series (mode graph)
+- **🔔 Alarm**: threshold in base unit, beep + banner when exceeded
+- **📷 PNG snapshot** of the window (needs Pillow, optional)
+- Always on top, movable; `Esc` or the window X closes it
 
-- Python 3.8+ — **aucune dépendance obligatoire** (tkinter + socket stdlib)
-- Optionnel : `pip install pillow` pour le bouton 📷
-- Un Rigol DM3068 sur le réseau (SCPI brut, port TCP **5555**)
+## Requirements
 
-## Installation
+- Python 3.8+ — **no mandatory dependency** (tkinter + stdlib sockets)
+- Optional: `pip install pillow` for the 📷 button
+- A Rigol DM3068 on the network (raw SCPI, TCP port **5555**)
 
-1. Copier le dossier ; mettre votre IP en tête de `dm3068_overlay.py` :
-   ```python
-   IP = "192.168.2.218"
-   PORT = 5555
-   ```
-2. Lancer :
-   - double-clic sur `dm3068_overlay.bat` (sans console), ou
-   - `python dm3068_overlay.py` (ajoutez `--graph` pour démarrer avec le graphique ouvert)
+## Install
 
-## Utilisation
+1. Clone or copy the folder; your meter's IP is asked once in the ⚙ settings
+   (defaults to `192.168.2.218`).
+2. Run:
+   - double-click `dm3068_overlay.bat` (no console window), or
+   - `python dm3068_overlay.py` (add `--graph` to start with the graph open)
 
-![Chiffres en direct](docs/overlay_chiffres.png)
+## Usage
 
-| Bouton | Effet |
+![Live digits](docs/overlay_chiffres.png)
+
+| Button | Effect |
 |---|---|
-| `V⎓ … F` | change la fonction du multimètre (et donc l'unité affichée) |
-| `⏱ − / +` | cadence d'interrogation : MAX → ÷4 → ÷10 → 1/5 s |
-| `⏸ / ▶` | stoppe / reprend l'acquisition (graphique gelé) |
-| `📈` | ouvre/ferme le graphique défilant |
-| `📄 CSV` | exporte la série affichée vers `logs/*.csv` (mode graphique) |
-| `🔔` | arme/désarme l'alarme (seuil demandé en unité de base) |
-| `📷` | capture PNG de la fenêtre vers `captures/` |
+| `V⎓ … F` | switch the meter function (and the displayed unit) |
+| `⏱ − / +` | polling cadence: MAX → ÷4 → ÷10 → 1/5 s |
+| `⏸ / ▶` | stop / resume acquisition (graph frozen) |
+| `🧹 Clear` | wipe the series, stats and graph |
+| `📈` | open/close the scrolling graph |
+| `📄 CSV` | export the displayed series to `logs/*.csv` (graph mode) |
+| `🔔` | arm/disarm the alarm (threshold asked in base unit) |
+| `📷` | save a PNG snapshot to `captures/` |
+| `⚙` | settings: IP address, language (English / Français) |
 
-> Le graphique se vide à chaque **changement de fonction** : c'est volontaire,
-> les unités et échelles ne sont pas comparables entre elles.
+> The graph is wiped on every **function change** on purpose: units and
+> scales are not comparable across functions.
 
-## Notes techniques (protocole)
+## Technical notes (protocol)
 
-Sur ce firmware DM3068 (01.01.00) :
+On this DM3068 firmware (01.01.00):
 
-- **VXI-11 est muet** (le portmapper TCP/111 accepte la connexion mais ne répond
-  jamais) → PyVISA / `python-vxi11` restent bloqués. Inutile d'insister.
-- **Le port TCP 5555 parle du SCPI texte brut** (c'était le canal de l'ancien
-  applet Java du web control, mort avec les navigateurs modernes) :
+- **VXI-11 is dead** (the TCP/111 portmapper accepts the connection but never
+  answers) → PyVISA / `python-vxi11` hang forever. Don't bother.
+- **TCP port 5555 speaks plain-text SCPI** (it used to feed the old Java
+  web-control applet, which modern browsers can no longer run):
   ```python
   import socket
   s = socket.create_connection(("192.168.2.218", 5555))
   s.sendall(b"*IDN?\n")          # -> Rigol Technologies,DM3068,…
   ```
-- Les mesures passent par les commandes `:MEAS:<x>?`, qui **basculent la
-  fonction et mesurent en un seul appel** ; `:FUNCtion?` renvoie
+- Measurements go through `:MEAS:<x>?` commands, which **switch the function
+  and measure in a single call**; `:FUNCtion?` answers
   `DCV, ACV, DCI, ACI, 2WR, 4WR, CONT, FREQ, PERI, DIODE, CAP`.
-- La surcharge est encodée **`9.9E37`**.
-- Aucune commande de vitesse (`RATE`, `NPLC`, `ZERO:AUTO`, `APER`… sont
-  refusées) : le plafond matériel est fixé par fonction — DCV ≈ 2,7 éch/s,
-  CONT ≈ 28 éch/s, DIOD ≈ 25 éch/s, ACV/ACI ≈ 1 éch/s, FREQ/PER ≈ 1 éch/s.
-- Un multimètre = **une grandeur à la fois** ; pour suivre V et A simultanément
-  comme une alimentation, il faut deux instruments.
+- Overload is encoded as **`9.9E37`**.
+- No speed commands (`RATE`, `NPLC`, `ZERO:AUTO`, `APER`… are all rejected):
+  the hardware ceiling is fixed per function — DCV ≈ 2.7 sps, CONT ≈ 28 sps,
+  DIOD ≈ 25 sps, ACV/ACI ≈ 1 sps, FREQ/PER ≈ 1 sps.
+- A multimeter measures **one quantity at a time**; to follow V and A at once
+  like a bench supply does, you need two instruments.
 
-## Limites connues
+## Known limits
 
-- Résolution graphique ~1–2 Hz sur les fonctions lentes (imposée par le firmware)
-- L'alarme est mono-seuil, sens « valeur absolue ≥ seuil »
-- Windows uniquement pour le bip (`winsound`) et la capture (Pillow/`ImageGrab`) ;
-  le reste est multiplateforme
+- ~1–2 Hz on slow functions in graph mode (firmware-imposed)
+- The alarm is single-threshold, "absolute value ≥ threshold"
+- Windows-only beep (`winsound`) and snapshot (Pillow/`ImageGrab`); the rest
+  is cross-platform
 
-## Licence
+## License
 
 [MIT](LICENSE)

@@ -1,29 +1,30 @@
 # -*- coding: utf-8 -*-
 """
-Overlay Rigol DM3068 v3 — lecture en direct, vitesse +/-, graphique, CSV, alarme.
+DM3068 Overlay v4 — live bench readout for the Rigol DM3068, in a floating
+always-on-top window: big red digits on black, cyan OVERLOAD banner, scrolling
+graph — the kind of inset you see in repair videos, wired to YOUR meter.
 
-Fenêtre toujours au premier plan, gros chiffres rouges sur fond noir,
-bannière OVERLOAD cyan (9.9E37), dans le style des incrustations des vidéos
-de réparation.
+Features:
+  - live reading (≈ 1–28 samples/s depending on function) with SI prefixes
+  - 11 remotely switchable functions; badge follows panel changes too
+  - ⚙ settings dialog: IP address + language (English default, French
+    available); persisted to dm3068_overlay.json next to the script
+  - ▶/⏸ start-stop (series kept), 🧹 Clear (wipe series/stats/graph)
+  - scrolling 600-point graph, auto-scaled, min/avg/max stats, measured rate
+  - speed − / +: MAX → ÷4 → ÷10 → 1/5 s (polling cadence; the hardware
+    ceiling is fixed per function: DCV ≈ 2.7 sps, CONT ≈ 28 sps, DIOD ≈ 25
+    sps, ACV/ACI ≈ 1 sps, FREQ/PER ≈ 1 sps — this firmware rejects
+    RATE/NPLC/ZERO/APER)
+  - 📄 CSV export, 🔔 threshold alarm with beep, 📷 window snapshot (Pillow)
+  - start with graph open: python dm3068_overlay.py --graph
 
-v3 :
-  - CORRECTION : le graphique ne se vidait plus toutes les 10 mesures
-    (la resynchro périodique de :FUNCtion? effaçait la série à tort)
-  - bouton ▶/⏸ start-stop d'acquisition (la série est conservée)
-  - bouton 📄 CSV (en mode graphique) : exporte la série affichée
-  - bouton 🔔 alarme : seuil en unité de base, bip + alerte au dépassement
-  - bouton 📷 capture PNG de la fenêtre (nécessite Pillow, optionnel)
-  - vitesse +/− : MAX → ÷4 → ÷10 → 1/5 s (cadence d'interrogation ;
-    le plafond matériel est fixe : DCV ≈ 2,7 éch/s, CONT ≈ 28 éch/s,
-    DIOD ≈ 25 éch/s, ACV/ACI ≈ 1 éch/s, FREQ/PER ≈ 1 éch/s — ce firmware
-    refuse RATE/NPLC/ZERO/APER)
-  - démarrage avec graphique ouvert : python dm3068_overlay.py --graph
-
-Protocole : SCPI brut sur port TCP 5555 (aucune dépendance requise).
-Fermeture : croix de la fenêtre ou touche Échap.
+Protocol: raw SCPI over TCP port 5555 (no dependencies required).
+Close: window X or Escape.
 """
 import csv
 import datetime
+import json
+import os
 import queue
 import socket
 import sys
@@ -31,7 +32,7 @@ import threading
 import time
 import tkinter as tk
 from collections import deque
-from tkinter import simpledialog
+from tkinter import simpledialog, messagebox
 
 try:
     import winsound
@@ -42,29 +43,31 @@ try:
 except ImportError:
     ImageGrab = None
 
-IP = "192.168.2.218"
+DEFAULT_IP = "192.168.2.218"
 PORT = 5555
-OVERLOAD = 9.9e37          # valeur renvoyée hors échelle
-HISTORY = 600              # points gardés pour le graphique
+OVERLOAD = 9.9e37          # value returned when out of range
+HISTORY = 600              # points kept for the graph
 CAPTURES_DIR = "captures"
 LOGS_DIR = "logs"
+CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "dm3068_overlay.json")
 
-# code renvoyé par :FUNCtion?  ->  (commande MEAS, unité de base, libellé)
+# function code returned by :FUNCtion?  ->  (MEAS command, base unit)
 FUNCS = {
-    "DCV":   (":MEAS:VOLT:DC?",  "V",  "V continu"),
-    "ACV":   (":MEAS:VOLT:AC?",  "V",  "V alternatif"),
-    "DCI":   (":MEAS:CURR:DC?",  "A",  "A continu"),
-    "ACI":   (":MEAS:CURR:AC?",  "A",  "A alternatif"),
-    "2WR":   (":MEAS:RES?",      "Ω",  "Résistance"),
-    "4WR":   (":MEAS:FRES?",     "Ω",  "Résistance 4 fils"),
-    "CONT":  (":MEAS:CONT?",     "Ω",  "Continuité"),
-    "FREQ":  (":MEAS:FREQ?",     "Hz", "Fréquence"),
-    "PERI":  (":MEAS:PER?",      "s",  "Période"),
-    "DIODE": (":MEAS:DIOD?",     "V",  "Test diode"),
-    "CAP":   (":MEAS:CAP?",      "F",  "Capacité"),
+    "DCV":   (":MEAS:VOLT:DC?",  "V"),
+    "ACV":   (":MEAS:VOLT:AC?",  "V"),
+    "DCI":   (":MEAS:CURR:DC?",  "A"),
+    "ACI":   (":MEAS:CURR:AC?",  "A"),
+    "2WR":   (":MEAS:RES?",      "Ω"),
+    "4WR":   (":MEAS:FRES?",     "Ω"),
+    "CONT":  (":MEAS:CONT?",     "Ω"),
+    "FREQ":  (":MEAS:FREQ?",     "Hz"),
+    "PERI":  (":MEAS:PER?",      "s"),
+    "DIODE": (":MEAS:DIOD?",     "V"),
+    "CAP":   (":MEAS:CAP?",      "F"),
 }
 
-# (extra sleep en s, libellé) — cadence d'interrogation au-dessus du plafond
+# (extra sleep in s, label) — polling cadence on top of the hardware ceiling
 SPEEDS = [(0.0, "MAX"), (1.0, "÷4"), (3.0, "÷10"), (10.0, "1/5s")]
 
 BUTTONS = [
@@ -73,9 +76,69 @@ BUTTONS = [
     ("s", "PERI"), ("DIOD", "DIODE"), ("F", "CAP"),
 ]
 
+# ---------------------------------------------------------------- i18n
+T = {
+    "en": {
+        "funcs": {"DCV": "DC volts", "ACV": "AC volts", "DCI": "DC current",
+                  "ACI": "AC current", "2WR": "Resistance",
+                  "4WR": "4-wire resistance", "CONT": "Continuity",
+                  "FREQ": "Frequency", "PERI": "Period",
+                  "DIODE": "Diode test", "CAP": "Capacitance"},
+        "connecting": "connecting…", "lost": "● CONNECTION LOST",
+        "stopped": "⏸ acquisition stopped",
+        "alarm": "🔔 ALARM: threshold exceeded",
+        "csv_done": "📄 series written → {path}",
+        "snap_done": "📷 snapshot → {path}",
+        "unknown": "unknown func {f}",
+        "sps": "sps", "pts": "pts",
+        "avg": "avg",
+        "clear": "Clear",
+        "alarm_title": "Alarm",
+        "alarm_prompt": "Alarm threshold in {unit} (absolute value):",
+        "set_title": "Settings", "set_ip": "IP address:",
+        "set_lang": "Language:", "ok": "OK", "cancel": "Cancel",
+        "bad_ip": "Invalid IP address.",
+        "waiting": "waiting for points…",
+    },
+    "fr": {
+        "funcs": {"DCV": "V continu", "ACV": "V alternatif", "DCI": "A continu",
+                  "ACI": "A alternatif", "2WR": "Résistance",
+                  "4WR": "Résistance 4 fils", "CONT": "Continuité",
+                  "FREQ": "Fréquence", "PERI": "Période",
+                  "DIODE": "Test diode", "CAP": "Capacité"},
+        "connecting": "connexion…", "lost": "● PERTE LIAISON",
+        "stopped": "⏸ acquisition arrêtée",
+        "alarm": "🔔 ALARME : seuil dépassé",
+        "csv_done": "📄 série écrite → {path}",
+        "snap_done": "📷 capture → {path}",
+        "unknown": "fct inconnue {f}",
+        "sps": "éch/s", "pts": "éch",
+        "avg": "moy",
+        "clear": "Vider",
+        "alarm_title": "Alarme",
+        "alarm_prompt": "Seuil d'alarme en {unit} (valeur absolue) :",
+        "set_title": "Configuration", "set_ip": "Adresse IP :",
+        "set_lang": "Langue :", "ok": "OK", "cancel": "Annuler",
+        "bad_ip": "Adresse IP invalide.",
+        "waiting": "en attente de points…",
+    },
+}
+LANG_CHOICES = [("English", "en"), ("Français", "fr")]
+
+
+def load_config():
+    cfg = {"ip": DEFAULT_IP, "lang": "en"}
+    try:
+        with open(CONFIG_PATH, encoding="utf-8") as f:
+            cfg.update({k: v for k, v in json.load(f).items()
+                        if k in ("ip", "lang")})
+    except (OSError, ValueError):
+        pass
+    return cfg
+
 
 def fmt(val, func):
-    """-> (chiffres, unité préfixée)  ex.: -1.839 mV ; 60.006 Hz."""
+    """-> (digits, prefixed unit)  e.g. -1.839 mV ; 60.006 Hz."""
     if func == "DIODE":
         return f"{val:.3f}", "V"
     for p, sym in ((1e9, "G"), (1e6, "M"), (1e3, "k"),
@@ -86,11 +149,15 @@ def fmt(val, func):
 
 
 class Meter(threading.Thread):
-    """Thread lecture : SCPI brut, cadence réglable, marche/arrêt."""
+    """Reader thread: raw SCPI, adjustable cadence, start/stop. Messages are
+    tagged with a generation id so stale messages from a replaced thread
+    (e.g. after an IP change) are ignored by the UI."""
 
-    def __init__(self, out_q):
+    def __init__(self, out_q, ip, gen):
         super().__init__(daemon=True)
         self.out_q = out_q
+        self.ip = ip
+        self.gen = gen
         self.stop_evt = threading.Event()
         self.desired_func = None
         self.speed_idx = 0
@@ -98,8 +165,19 @@ class Meter(threading.Thread):
         self.sock = None
         self.func = None
 
+    def put(self, kind, *payload):
+        self.out_q.put((self.gen, kind, *payload))
+
     def set_speed(self, idx):
         self.speed_idx = idx % len(SPEEDS)
+
+    def shutdown(self):
+        self.stop_evt.set()
+        if self.sock is not None:
+            try:
+                self.sock.close()      # unblocks any pending recv
+            except OSError:
+                pass
 
     def _read_line(self):
         self.sock.settimeout(4)
@@ -107,7 +185,7 @@ class Meter(threading.Thread):
         while b"\n" not in buf:
             d = self.sock.recv(4096)
             if not d:
-                raise ConnectionError("liaison fermée par l'instrument")
+                raise ConnectionError("link closed by instrument")
             buf += d
         return buf.decode(errors="replace").strip()
 
@@ -116,9 +194,9 @@ class Meter(threading.Thread):
         return self._read_line()
 
     def _connect(self):
-        self.sock = socket.create_connection((IP, PORT), timeout=2)
+        self.sock = socket.create_connection((self.ip, PORT), timeout=2)
         self.sock.settimeout(4)
-        for _ in range(12):                       # vider la file d'erreurs
+        for _ in range(12):                       # drain the error queue
             if self._ask(":SYSTem:ERRor?").startswith("0,"):
                 break
         self.func = self._ask(":FUNCtion?")
@@ -130,51 +208,53 @@ class Meter(threading.Thread):
             try:
                 if self.sock is None:
                     self._connect()
-                    self.out_q.put(("status", f"● {IP}"))
-                    self.out_q.put(("func", self.func))
+                    self.put("status", f"● {self.ip}")
+                    self.put("func", self.func)
 
-                # clic bouton de fonction : basculer (MEAS bascule ET mesure ;
-                # à l'arrêt on jette la lecture, la série reste gelée)
+                # function button click: MEAS switches AND measures; when
+                # stopped the reading is discarded so the series stays frozen
                 if self.desired_func is not None:
                     self._ask(FUNCS[self.desired_func][0])
                     self.func = self.desired_func
                     self.desired_func = None
                     since_funcq = 0
-                    self.out_q.put(("func", self.func))
+                    self.put("func", self.func)
 
                 if not self.running:
                     if was_running:
-                        self.out_q.put(("stopped",))
+                        self.put("stopped")
                         was_running = False
                     self.stop_evt.wait(0.3)
                     continue
                 was_running = True
 
-                # resynchro périodique avec le bouton physique du mètre
+                # periodic re-sync with the meter's physical button
                 if since_funcq >= 10:
                     self.func = self._ask(":FUNCtion?")
                     since_funcq = 0
-                    self.out_q.put(("func", self.func))
+                    self.put("func", self.func)
                 since_funcq += 1
 
                 entry = FUNCS.get(self.func)
                 if entry is None:
-                    self.out_q.put(("reading", self.func, None, f"fct inconnue {self.func!r}"))
+                    self.put("reading", self.func, None, "unknown")
                     self.stop_evt.wait(1.0)
                     continue
                 raw = self._ask(entry[0])
                 try:
                     val = float(raw)
                 except ValueError:
-                    self.out_q.put(("reading", self.func, None, raw))
+                    self.put("reading", self.func, None, raw)
                     continue
-                self.out_q.put(("reading", self.func, val, None, time.time()))
+                self.put("reading", self.func, val, None, time.time())
 
                 extra = SPEEDS[self.speed_idx][0]
                 if extra:
                     self.stop_evt.wait(extra)
             except Exception:
-                self.out_q.put(("status", "● PERTE LIAISON"))
+                if self.stop_evt.is_set():
+                    break
+                self.put("status", "LOST")
                 if self.sock is not None:
                     try:
                         self.sock.close()
@@ -187,24 +267,30 @@ class Meter(threading.Thread):
 class Overlay(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title(f"DM3068 — {IP}")
+        cfg = load_config()
+        self.lang = cfg["lang"] if cfg["lang"] in ("en", "fr") else "en"
+        self.ip = cfg["ip"]
+        self.T = T[self.lang]
+
+        self.title(f"DM3068 — {self.ip}")
         self.configure(bg="black")
         self.attributes("-topmost", True)
         self.bind("<Escape>", lambda e: self.destroy())
 
-        self.series = deque(maxlen=HISTORY)     # (timestamp, valeur | None=OL)
+        self.series = deque(maxlen=HISTORY)     # (timestamp, value | None=OL)
         self.dirty = False
         self.func = None
         self.alarm_threshold = None
         self.last_beep = 0.0
+        self.gen = 0
 
         top = tk.Frame(self, bg="black")
         top.pack(fill="x", padx=10, pady=(6, 0))
         self.func_lbl = tk.Label(top, text="—", font=("Consolas", 13, "bold"),
                                  fg="#ffd400", bg="black")
         self.func_lbl.pack(side="left")
-        self.stat_lbl = tk.Label(top, text="connexion…", font=("Consolas", 11),
-                                 fg="#888888", bg="black")
+        self.stat_lbl = tk.Label(top, text=self.T["connecting"],
+                                 font=("Consolas", 11), fg="#888888", bg="black")
         self.stat_lbl.pack(side="right")
 
         mid = tk.Frame(self, bg="black")
@@ -228,7 +314,7 @@ class Overlay(tk.Tk):
                                 highlightthickness=1, highlightbackground="#333333")
         self.graph_on = False
 
-        # --- boutons de fonction ---
+        # --- function buttons ---
         btns = tk.Frame(self, bg="black")
         btns.pack(fill="x", padx=8)
         for label, code in BUTTONS:
@@ -239,7 +325,7 @@ class Overlay(tk.Tk):
                           command=lambda c=code: self.switch_to(c))
             b.pack(side="left", padx=2)
 
-        # --- boutons de contrôle ---
+        # --- control buttons ---
         def ctl_btn(parent, text, cb, fg="#dddddd", width=3):
             return tk.Button(parent, text=text, width=width, bd=0,
                              font=("Consolas", 11, "bold"),
@@ -256,7 +342,9 @@ class Overlay(tk.Tk):
 
         self.run_btn = ctl_btn(ctl, "⏸", self.toggle_run, fg="#ffaa00", width=4)
         self.run_btn.pack(side="left", padx=(8, 2))
-
+        self.clear_btn = ctl_btn(ctl, self.T["clear"], self.clear_series,
+                                 fg="#dddddd", width=7)
+        self.clear_btn.pack(side="left", padx=2)
         self.graph_btn = ctl_btn(ctl, "📈", self.toggle_graph, fg="#a6e22e", width=4)
         self.graph_btn.pack(side="left", padx=2)
 
@@ -269,15 +357,93 @@ class Overlay(tk.Tk):
 
         if ImageGrab is not None:
             ctl_btn(ctl, "📷", self.snapshot, fg="#aaaaaa", width=4).pack(side="left", padx=2)
+        ctl_btn(ctl, "⚙", self.open_settings, fg="#bbbbbb", width=4).pack(side="left", padx=2)
 
         self.q = queue.Queue()
-        self.meter = Meter(self.q)
+        self.meter = Meter(self.q, self.ip, self.gen)
         self.meter.start()
         self.after(70, self.poll)
         self.after(140, self.redraw)
 
-        if "--graph" in sys.argv:                # démarrer graphique ouvert
+        if "--graph" in sys.argv:                # start with graph open
             self.toggle_graph()
+
+    # ---------------- settings ----------------
+
+    def open_settings(self):
+        dlg = tk.Toplevel(self)
+        dlg.title(self.T["set_title"])
+        dlg.configure(bg="black")
+        dlg.resizable(False, False)
+        dlg.transient(self)
+        dlg.grab_set()
+        dlg.attributes("-topmost", True)
+
+        tk.Label(dlg, text=self.T["set_ip"], font=("Consolas", 11, "bold"),
+                 fg="#dddddd", bg="black").grid(row=0, column=0, sticky="w",
+                                                padx=10, pady=(12, 4))
+        ip_var = tk.StringVar(value=self.ip)
+        tk.Entry(dlg, textvariable=ip_var, width=18, bd=0,
+                 font=("Consolas", 12), fg="#ff1a1a", bg="#111111",
+                 insertbackground="#ff1a1a").grid(row=1, column=0, sticky="we",
+                                                  padx=10, pady=(0, 8))
+
+        tk.Label(dlg, text=self.T["set_lang"], font=("Consolas", 11, "bold"),
+                 fg="#dddddd", bg="black").grid(row=2, column=0, sticky="w",
+                                                padx=10, pady=(4, 4))
+        lang_var = tk.StringVar(value=dict(LANG_CHOICES)[self.lang])
+        box = tk.OptionMenu(dlg, lang_var, *[lbl for lbl, _ in LANG_CHOICES])
+        box.config(font=("Consolas", 11), bg="#1a1a1a", fg="#dddddd",
+                   activebackground="#333333", bd=0, highlightthickness=0)
+        box.grid(row=3, column=0, sticky="we", padx=10, pady=(0, 12))
+
+        def on_ok():
+            ip = ip_var.get().strip()
+            try:
+                socket.inet_aton(ip)
+            except OSError:
+                messagebox.showwarning(self.T["set_title"], self.T["bad_ip"],
+                                       parent=dlg)
+                return
+            lang = dict((lbl, c) for lbl, c in LANG_CHOICES)[lang_var.get()]
+            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+                json.dump({"ip": ip, "lang": lang}, f)
+            dlg.destroy()
+            self.apply_settings(ip, lang)
+
+        row = tk.Frame(dlg, bg="black")
+        row.grid(row=4, column=0, sticky="e", padx=10, pady=(0, 12))
+        tk.Button(row, text=self.T["cancel"], width=8, bd=0,
+                  font=("Consolas", 11, "bold"), fg="#dddddd", bg="#1a1a1a",
+                  activebackground="#333333",
+                  command=dlg.destroy).pack(side="left", padx=4)
+        tk.Button(row, text=self.T["ok"], width=8, bd=0,
+                  font=("Consolas", 11, "bold"), fg="#a6e22e", bg="#1a1a1a",
+                  activebackground="#333333", command=on_ok).pack(side="left")
+
+    def apply_settings(self, ip, lang):
+        lang_changed = lang != self.lang
+        ip_changed = ip != self.ip
+
+        if lang_changed:
+            self.lang = lang
+            self.T = T[lang]
+            self.clear_btn.config(text=self.T["clear"])
+            self.apply_func(self.func)           # refresh the badge wording
+
+        if ip_changed:
+            self.ip = ip
+            self.gen += 1
+            self.meter.shutdown()                # kill the old thread promptly
+            self.series.clear()
+            self.dirty = True
+            self.func = None
+            self.func_lbl.config(text="—")
+            self.title(f"DM3068 — {self.ip}")
+            self.stat_lbl.config(text=self.T["connecting"], fg="#888888")
+            self.ol_lbl.config(text="")
+            self.meter = Meter(self.q, self.ip, self.gen)
+            self.meter.start()
 
     # ---------------- interactions ----------------
 
@@ -292,6 +458,11 @@ class Overlay(tk.Tk):
         self.meter.running = not self.meter.running
         self.run_btn.config(text="▶" if not self.meter.running else "⏸")
 
+    def clear_series(self):
+        self.series.clear()
+        self.dirty = True
+        self.update_stats()
+
     def toggle_graph(self):
         self.graph_on = not self.graph_on
         if self.graph_on:
@@ -302,14 +473,14 @@ class Overlay(tk.Tk):
             self.csv_btn.config(state="disabled")
 
     def set_alarm(self):
-        if self.alarm_threshold is not None:      # désarmer
+        if self.alarm_threshold is not None:      # disarm
             self.alarm_threshold = None
-            self.alarm_btn.config(text="🔔", fg="#ff8080")
+            self.alarm_btn.config(text="🔔", fg="#ff8080", bg="#1a1a1a")
             self.ol_lbl.config(text="")
             return
         unit = FUNCS[self.func][1] if self.func in FUNCS else "?"
         th = simpledialog.askfloat(
-            "Alarme", f"Seuil d'alarme en {unit} (valeur absolue) :",
+            self.T["alarm_title"], self.T["alarm_prompt"].format(unit=unit),
             parent=self, minvalue=0.0, initialvalue=1.0)
         if th is None:
             return
@@ -317,42 +488,40 @@ class Overlay(tk.Tk):
         self.alarm_btn.config(text="🔔 ON", fg="#ffffff", bg="#881111")
 
     def save_csv(self):
-        import os
         os.makedirs(LOGS_DIR, exist_ok=True)
         name = f"{LOGS_DIR}/dm3068_{datetime.datetime.now():%Y%m%d_%H%M%S}.csv"
         unit = FUNCS[self.func][1] if self.func in FUNCS else "?"
         with open(name, "w", newline="", encoding="utf-8-sig") as f:
             w = csv.writer(f, delimiter=";")
-            w.writerow(["horodatage", "epoch_s", "fonction", f"valeur ({unit})"])
+            w.writerow(["timestamp", "epoch_s", "function", f"value ({unit})"])
             for ts, v in self.series:
                 stamp = datetime.datetime.fromtimestamp(ts).isoformat(timespec="milliseconds")
                 w.writerow([stamp, f"{ts:.3f}", self.func or "?",
                             "OVERLOAD" if v is None else repr(v)])
-        self.ol_lbl.config(text=f"📄 série écrite → {name}")
+        self.ol_lbl.config(text=self.T["csv_done"].format(path=name), fg="#a6e22e")
         self.after(3000, lambda: self.ol_lbl.config(text=""))
 
     def snapshot(self):
-        import os
         os.makedirs(CAPTURES_DIR, exist_ok=True)
         x, y = self.winfo_rootx(), self.winfo_rooty()
         w, h = self.winfo_width(), self.winfo_height()
         img = ImageGrab.grab(bbox=(x, y, x + w, y + h))
         name = f"{CAPTURES_DIR}/snapshot_{datetime.datetime.now():%Y%m%d_%H%M%S}.png"
         img.save(name)
-        self.ol_lbl.config(text=f"📷 capture → {name}")
+        self.ol_lbl.config(text=self.T["snap_done"].format(path=name), fg="#a6e22e")
         self.after(3000, lambda: self.ol_lbl.config(text=""))
 
-    # ---------------- boucles UI ----------------
+    # ---------------- UI loops ----------------
 
     def apply_func(self, code):
-        """Met à jour le badge de fonction ; vide la série si CHANGEMENT réel."""
+        """Refresh the function badge; wipe the series ONLY on a real change."""
         changed = code != self.func
         self.func = code
         if code in FUNCS:
-            self.func_lbl.config(text=f"{code}  ({FUNCS[code][2]})")
+            self.func_lbl.config(text=f"{code}  ({self.T['funcs'][code]})")
         else:
-            self.func_lbl.config(text=str(code))
-        if changed:
+            self.func_lbl.config(text=str(code) if code else "—")
+        if changed and code is not None:
             self.series.clear()
             self.dirty = True
 
@@ -360,23 +529,27 @@ class Overlay(tk.Tk):
         try:
             while True:
                 msg = self.q.get_nowait()
-                kind = msg[0]
+                if msg[0] != self.gen:            # stale message from old meter
+                    continue
+                kind = msg[1]
                 if kind == "status":
-                    txt = msg[1]
+                    txt, lost = msg[2], msg[2] == "LOST"
                     self.stat_lbl.config(
-                        text=txt,
-                        fg="#33cc33" if "PERTE" not in txt else "#ff4040")
+                        text=self.T["lost"] if lost else txt,
+                        fg="#ff4040" if lost else "#33cc33")
                 elif kind == "func":
-                    self.apply_func(msg[1])
+                    self.apply_func(msg[2])
                 elif kind == "stopped":
-                    self.ol_lbl.config(text="⏸ acquisition arrêtée", fg="#ffaa00")
+                    self.ol_lbl.config(text=self.T["stopped"], fg="#ffaa00")
                 elif kind == "reading":
-                    _, func, val, err, ts = msg
+                    _, _, func, val, err, ts = msg
                     self.apply_func(func)
                     if err is not None:
                         self.val_lbl.config(text="!  ERR")
                         self.unit_lbl.config(text="")
-                        self.ol_lbl.config(text=str(err), fg="#ff8080")
+                        self.ol_lbl.config(
+                            text=self.T["unknown"].format(f=func)
+                            if err == "unknown" else str(err), fg="#ff8080")
                     elif val >= OVERLOAD:
                         self.val_lbl.config(text="- - - -")
                         self.unit_lbl.config(text="")
@@ -390,10 +563,10 @@ class Overlay(tk.Tk):
                         self.ol_lbl.config(text="")
                         self.series.append((ts, val))
                         self.dirty = True
-                    # alarme (hors surcharge)
+                    # alarm (real readings only)
                     if (self.alarm_threshold is not None and err is None
                             and val < OVERLOAD and abs(val) >= self.alarm_threshold):
-                        self.ol_lbl.config(text=f"🔔 ALARME : seuil dépassé", fg="#ff4000")
+                        self.ol_lbl.config(text=self.T["alarm"], fg="#ff4000")
                         if winsound and time.time() - self.last_beep > 0.8:
                             self.last_beep = time.time()
                             threading.Thread(
@@ -418,19 +591,19 @@ class Overlay(tk.Tk):
             self.stats_lbl.config(text=f"({hz})" if hz else "")
             return
         lo, hi = min(vals), max(vals)
-        moy = sum(vals) / len(vals)
-        lo_s = " ".join(fmt(lo, self.func)) if self.func in FUNCS else "?"
-        moy_s = " ".join(fmt(moy, self.func)) if self.func in FUNCS else "?"
-        hi_s = " ".join(fmt(hi, self.func)) if self.func in FUNCS else "?"
+        avg = sum(vals) / len(vals)
+        f3 = (lambda v: " ".join(fmt(v, self.func))
+              if self.func in FUNCS else "?")
         self.stats_lbl.config(
-            text=f"min {lo_s}   ·   moy {moy_s}   ·   max {hi_s}   ·   {hz}")
+            text=f"min {f3(lo)}   ·   {self.T['avg']} {f3(avg)}   ·   "
+                 f"max {f3(hi)}   ·   {hz}")
 
     def measured_hz(self):
         pts = [t for t, v in self.series if v is not None]
         if len(pts) >= 2:
             dt = pts[-1] - pts[0]
             if dt > 0:
-                return f"{(len(pts) - 1) / dt:.1f} éch/s"
+                return f"{(len(pts) - 1) / dt:.1f} {self.T['sps']}"
         return ""
 
     def draw(self):
@@ -438,16 +611,17 @@ class Overlay(tk.Tk):
         c = self.canvas
         c.delete("all")
         w, h = int(c["width"]), int(c["height"])
-        for frac in (0.25, 0.5, 0.75):                      # grille horizontale
+        for frac in (0.25, 0.5, 0.75):                      # horizontal grid
             y = int(h * frac)
             c.create_line(0, y, w, y, fill="#222222")
         pts = list(self.series)
         vals = [v for _, v in pts if v is not None]
-        hz = self.measured_hz()
-        c.create_text(8, 8, anchor="nw", text=f"{self.func or '?'}   {hz}   [{len(pts)} éch]",
+        c.create_text(8, 8, anchor="nw",
+                      text=f"{self.func or '?'}   {self.measured_hz()}   "
+                           f"[{len(pts)} {self.T['pts']}]",
                       fill="#888888", font=("Consolas", 10))
         if len(vals) < 2:
-            c.create_text(w // 2, h // 2, text="en attente de points…",
+            c.create_text(w // 2, h // 2, text=self.T["waiting"],
                           fill="#555555", font=("Consolas", 12))
             return
         lo, hi = min(vals), max(vals)
@@ -461,7 +635,7 @@ class Overlay(tk.Tk):
             y = h - 4 - (v - lo) / (hi - lo) * (h - 20)
             return x, y
 
-        # polyline en segments continus (les None = OVERLOAD coupent le trait)
+        # continuous segments only (None = OVERLOAD cuts the trace)
         seg = []
         for i, (_, v) in enumerate(pts):
             if v is None:
@@ -473,11 +647,11 @@ class Overlay(tk.Tk):
         if len(seg) >= 2:
             c.create_line(seg, fill="#ff1a1a", width=1)
 
-        top_s = " ".join(fmt(hi, self.func)) if self.func in FUNCS else f"{hi:.3g}"
-        bot_s = " ".join(fmt(lo, self.func)) if self.func in FUNCS else f"{lo:.3g}"
-        c.create_text(w - 8, 8, anchor="ne", text=top_s,
+        f3 = (lambda v: " ".join(fmt(v, self.func))
+              if self.func in FUNCS else f"{v:.3g}")
+        c.create_text(w - 8, 8, anchor="ne", text=f3(hi),
                       fill="#666666", font=("Consolas", 10))
-        c.create_text(w - 8, h - 8, anchor="se", text=bot_s,
+        c.create_text(w - 8, h - 8, anchor="se", text=f3(lo),
                       fill="#666666", font=("Consolas", 10))
 
 
