@@ -260,6 +260,9 @@ BUILD_HTML = """<!doctype html><html><head><meta charset="utf-8">
   #u{font-size:8vmin;font-weight:bold;margin-left:1vmin;}
   #ol{color:var(--ol);font-size:7vmin;font-weight:bold;min-height:8vmin;}
   #s{color:var(--stats);font-size:3vmin;}
+  #ws{color:var(--stats);font-size:2.6vmin;min-height:3.2vmin;margin-top:1vmin;}
+  #ws.on{color:#7cfc00;}
+  #ws.err{color:#ff8080;}
   body.theme-dark{--bg:#000;--digits:#ff1a1a;--func:#ffd400;
                   --ol:#00ffff;--stats:#9aa0a6;}
   body.theme-light{--bg:#fff;--digits:#d40000;--func:#b8860b;
@@ -281,6 +284,7 @@ BUILD_HTML = """<!doctype html><html><head><meta charset="utf-8">
 <div id="row"><span id="v">- - - -</span><span id="u"></span></div>
 <div id="ol"></div>
 <div id="s"></div>
+<div id="ws"></div>
 <div id="ui">
 <button id="wake" title="keep this screen awake">☀</button>
 <button id="btn" title="background: dark / light / transparent">&#9680;</button>
@@ -301,11 +305,18 @@ function apply(name){
     apply(ORDER[(ORDER.indexOf(cur) + 1) % ORDER.length]);
   });
   // keep-awake: Wake Lock API when the context allows it (HTTPS), plus a
-  // NoSleep-style 2px muted video fed by a canvas stream — playing video is
-  // what actually keeps an iPhone screen lit over plain HTTP. Needs one
-  // tap (browser autoplay rules), so it lives behind the ☀ button.
-  let wakeLock = null, vid = null, awake = false;
+  // NoSleep-style 2px muted video fed by a canvas stream and a silent
+  // WebAudio tone — playing media is what actually keeps an iPhone screen
+  // lit over plain HTTP. Needs one tap (autoplay rules): the ☀ button.
+  // Every outcome is reported in the #ws status line so failures are never
+  // silent.
+  let wakeLock = null, vid = null, audioCtx = null, awake = false;
   const wakeBtn = document.getElementById("wake");
+  const ws = document.getElementById("ws");
+  function wakeMsg(text, cls){
+    ws.textContent = text;
+    ws.className = cls || "";
+  }
   function setAwake(on){
     awake = on;
     wakeBtn.textContent = on ? "\u2600 ON" : "\u2600";
@@ -314,14 +325,16 @@ function apply(name){
     if(awake){
       try{ if(wakeLock){ wakeLock.release(); wakeLock = null; } }catch(e){}
       if(vid){ vid.pause(); }
+      try{ if(audioCtx){ audioCtx.suspend(); } }catch(e){}
       setAwake(false);
+      wakeMsg("screen awake — off");
       return;
     }
-    let ok = false;
+    const parts = [];
     try{
       if("wakeLock" in navigator){
         wakeLock = await navigator.wakeLock.request("screen");
-        ok = true;
+        parts.push("wakeLock");
       }
     }catch(e){}
     try{
@@ -336,10 +349,33 @@ function apply(name){
         vid.srcObject = cv.captureStream(10);
       }
       await vid.play();
-      ok = true;
-    }catch(e){}
-    setAwake(ok);
-    if(!ok){ wakeBtn.textContent = "\u2600 \u2717"; }
+      parts.push("video");
+    }catch(e){
+      parts.push("videoERR:" + (e && e.name ? e.name : "?"));
+    }
+    try{
+      if(!audioCtx){
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const o = audioCtx.createOscillator();
+        const g = audioCtx.createGain();
+        g.gain.value = 0;                          // silent
+        o.connect(g); g.connect(audioCtx.destination);
+        o.start();
+      } else if(audioCtx.state === "suspended"){
+        await audioCtx.resume();
+      }
+      parts.push("audio");
+    }catch(e){
+      parts.push("audioERR:" + (e && e.name ? e.name : "?"));
+    }
+    if(parts.length > 0 && parts.some(function(p){ return p.indexOf("ERR") === -1; })){
+      setAwake(true);
+      wakeMsg("\u2600 screen awake — ON (" + parts.join(", ") + ")", "on");
+    } else {
+      setAwake(false);
+      wakeBtn.textContent = "\u2600 \u2717";
+      wakeMsg("\u2600 not available on this browser: " + parts.join(", "), "err");
+    }
   }
   wakeBtn.addEventListener("click", toggleWake);
   document.addEventListener("visibilitychange", async function(){
