@@ -18,6 +18,7 @@ Features:
   - ▶/■ CSV live logging: rows written in real time to logs/*.csv,
     "● REC n" counter in the stats line while recording
   - 🔔 threshold alarm with beep, 📷 window snapshot (Pillow)
+  - 📂 opens the app folder, ⚙ settings (Segoe MDL2 Assets icons on Windows)
   - start with graph open: python dm3068_overlay.py --graph
 
 Protocol: raw SCPI over TCP port 5555 (no dependencies required).
@@ -33,6 +34,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+import tkinter.font as tkfont
 from collections import deque
 from tkinter import simpledialog, messagebox
 
@@ -51,8 +53,10 @@ OVERLOAD = 9.9e37          # value returned when out of range
 HISTORY = 600              # points kept for the graph
 CAPTURES_DIR = "captures"
 LOGS_DIR = "logs"
-CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                           "dm3068_overlay.json")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_PATH = os.path.join(BASE_DIR, "dm3068_overlay.json")
+GEAR_GLYPH = chr(0xE713)       # Segoe MDL2 Assets "Setting" (real gear)
+FOLDER_GLYPH = chr(0xE8B7)     # Segoe MDL2 Assets "Folder"
 
 # function code returned by :FUNCtion?  ->  (MEAS command, base unit)
 FUNCS = {
@@ -280,6 +284,17 @@ class Overlay(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._quit)
         self.bind("<Escape>", lambda e: self._quit())
 
+        # Segoe MDL2 Assets ships with Windows 10/11: real gear & folder
+        # glyphs (emoji ⚙ renders as a "flower" on some systems)
+        try:
+            self.icon_font = (("Segoe MDL2 Assets", 12)
+                              if "Segoe MDL2 Assets" in tkfont.families()
+                              else None)
+        except tk.TclError:
+            self.icon_font = None
+        gear = GEAR_GLYPH if self.icon_font else "⚙"
+        folder = FOLDER_GLYPH if self.icon_font else "📁"
+
         self.series = deque(maxlen=HISTORY)     # (timestamp, value | None=OL)
         self.dirty = False
         self.func = None
@@ -332,9 +347,9 @@ class Overlay(tk.Tk):
             b.pack(side="left", padx=2)
 
         # --- control buttons ---
-        def ctl_btn(parent, text, cb, fg="#dddddd", width=3):
+        def ctl_btn(parent, text, cb, fg="#dddddd", width=3, font=None):
             return tk.Button(parent, text=text, width=width, bd=0,
-                             font=("Consolas", 11, "bold"),
+                             font=font or ("Consolas", 11, "bold"),
                              fg=fg, bg="#1a1a1a", activebackground="#333333",
                              activeforeground="#ffffff", command=cb)
 
@@ -362,7 +377,10 @@ class Overlay(tk.Tk):
 
         if ImageGrab is not None:
             ctl_btn(ctl, "📷", self.snapshot, fg="#aaaaaa", width=4).pack(side="left", padx=2)
-        ctl_btn(ctl, "⚙", self.open_settings, fg="#bbbbbb", width=4).pack(side="left", padx=2)
+        ctl_btn(ctl, folder, self.open_folder, fg="#e8c86e", width=4,
+                font=self.icon_font).pack(side="left", padx=2)
+        ctl_btn(ctl, gear, self.open_settings, fg="#bbbbbb", width=4,
+                font=self.icon_font).pack(side="left", padx=2)
 
         self.q = queue.Queue()
         self.meter = Meter(self.q, self.ip, self.gen)
@@ -553,6 +571,13 @@ class Overlay(tk.Tk):
         img.save(name)
         self.ol_lbl.config(text=self.T["snap_done"].format(path=name), fg="#a6e22e")
         self.after(3000, lambda: self.ol_lbl.config(text=""))
+
+    def open_folder(self):
+        try:
+            os.startfile(BASE_DIR)               # Windows
+        except AttributeError:
+            import subprocess
+            subprocess.Popen(["xdg-open", BASE_DIR])
 
     # ---------------- UI loops ----------------
 

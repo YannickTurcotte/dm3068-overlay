@@ -59,6 +59,7 @@ graph — the kind of inset you see in repair videos on YouTube, but wired to
 | `▶ / ■ CSV` | start / stop live logging to `logs/*.csv` (`● REC n` shown in the stats line while recording; the stop message reports the row count and file path) |
 | `🔔` | arm/disarm the alarm (threshold asked in base unit) |
 | `📷` | save a PNG snapshot to `captures/` |
+| `📂` | open the app folder in Explorer (captures/, logs/ live next to the script) |
 | `⚙` | settings: IP address, language (English / Français) |
 
 > The graph is wiped on every **function change** on purpose: units and
