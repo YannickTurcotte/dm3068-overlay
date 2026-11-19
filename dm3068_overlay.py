@@ -271,8 +271,11 @@ BUILD_HTML = """<!doctype html><html><head><meta charset="utf-8">
        text-shadow:0 0 4px rgba(0,0,0,.55);}
   #btn{position:fixed;top:2vmin;right:2vmin;font-size:5vmin;line-height:1;
        border:none;border-radius:1.5vmin;padding:1vmin 2vmin;
-       background:rgba(128,128,128,.35);color:#fff;cursor:pointer;}
-  body.theme-transparent #btn{display:none;}
+       background:rgba(0,0,0,.2);color:#333;cursor:pointer;
+       transition:opacity .3s;}
+  body.theme-dark #btn{background:rgba(128,128,128,.35);color:#fff;}
+  body.theme-transparent #btn{opacity:0;pointer-events:none;}
+  body.theme-transparent.btn-reveal #btn{opacity:.65;pointer-events:auto;}
 </style></head><body class="theme-dark">
 <div id="f">—</div>
 <div id="row"><span id="v">- - - -</span><span id="u"></span></div>
@@ -293,6 +296,18 @@ function apply(name){
   document.getElementById("btn").addEventListener("click", function(){
     const cur = document.body.className.replace("theme-","");
     apply(ORDER[(ORDER.indexOf(cur) + 1) % ORDER.length]);
+  });
+  // In the transparent (OBS) theme the button is hidden: tapping anywhere
+  // reveals it for 5 s so a phone user can still switch themes. OBS never
+  // taps, so the stream stays clean.
+  document.body.addEventListener("click", function(ev){
+    if(ev.target.id === "btn") return;
+    if(document.body.className.indexOf("theme-transparent") === -1) return;
+    document.body.classList.add("btn-reveal");
+    clearTimeout(window.__btnTimer);
+    window.__btnTimer = setTimeout(function(){
+      document.body.classList.remove("btn-reveal");
+    }, 5000);
   });
 })();
 async function tick(){
